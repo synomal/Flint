@@ -7,6 +7,8 @@ pub const RenderState = struct {
     font: ?*c.TTF_Font = null,
     text_engine: ?*c.TTF_TextEngine = null,
     bg_texture: ?*c.SDL_Texture = null,
+    logo_texture: ?*c.SDL_Texture = null,
+    text_logo_texture: ?*c.SDL_Texture = null,
     window_width: f32 = 854,
     window_height: f32 = 480,
 };
@@ -16,33 +18,20 @@ pub fn init(
     sdl_renderer: *c.SDL_Renderer,
     bg_data: []const u8,
     font_data: []const u8,
+    logo_data: []const u8,
+    text_logo_data: []const u8,
 ) RenderState {
     var state = RenderState{ .renderer = sdl_renderer };
 
     // ── Background image from embedded bytes ──
-    var bg_w: c_int = 0;
-    var bg_h: c_int = 0;
-    var bg_ch: c_int = 0;
-    const pixels = c.stbi_load_from_memory(
-        bg_data.ptr,
-        @intCast(bg_data.len),
-        &bg_w,
-        &bg_h,
-        &bg_ch,
-        4,
-    );
-    if (pixels != null) {
-        const surf = c.SDL_CreateSurfaceFrom(bg_w, bg_h, c.SDL_PIXELFORMAT_RGBA32, @ptrCast(pixels), bg_w * 4);
-        if (surf != null) {
-            state.bg_texture = c.SDL_CreateTextureFromSurface(sdl_renderer, surf);
-            c.SDL_DestroySurface(surf);
-        } else {
-            std.log.err("Failed to create BG surface: {s}", .{c.SDL_GetError()});
-        }
-        c.stbi_image_free(pixels);
-    } else {
-        std.log.err("stbi_load failed: {s}", .{c.stbi_failure_reason()});
+    state.bg_texture = loadTextureFromMemory(sdl_renderer, bg_data);
+    if (state.bg_texture == null) {
+        std.log.err("Failed to load background texture", .{});
     }
+
+    // ── Logo and Text Logo ──
+    state.logo_texture = loadTextureFromMemory(sdl_renderer, logo_data);
+    state.text_logo_texture = loadTextureFromMemory(sdl_renderer, text_logo_data);
 
     // ── SDL3_ttf ──
     _ = c.TTF_Init();
@@ -75,7 +64,37 @@ pub fn deinit(state: *RenderState) void {
     if (state.font) |f| c.TTF_CloseFont(f);
     if (state.text_engine) |te| c.TTF_DestroyRendererTextEngine(te);
     if (state.bg_texture) |t| c.SDL_DestroyTexture(t);
+    if (state.logo_texture) |t| c.SDL_DestroyTexture(t);
+    if (state.text_logo_texture) |t| c.SDL_DestroyTexture(t);
     c.TTF_Quit();
+}
+
+fn loadTextureFromMemory(renderer: *c.SDL_Renderer, data: []const u8) ?*c.SDL_Texture {
+    var w: c_int = 0;
+    var h: c_int = 0;
+    var ch: c_int = 0;
+    const pixels = c.stbi_load_from_memory(
+        data.ptr,
+        @intCast(data.len),
+        &w,
+        &h,
+        &ch,
+        4,
+    );
+    if (pixels == null) {
+        std.log.err("stbi_load failed: {s}", .{c.stbi_failure_reason()});
+        return null;
+    }
+    defer c.stbi_image_free(pixels);
+
+    const surf = c.SDL_CreateSurfaceFrom(w, h, c.SDL_PIXELFORMAT_RGBA32, @ptrCast(pixels), w * 4);
+    if (surf == null) {
+        std.log.err("Failed to create surface: {s}", .{c.SDL_GetError()});
+        return null;
+    }
+    defer c.SDL_DestroySurface(surf);
+
+    return c.SDL_CreateTextureFromSurface(renderer, surf);
 }
 
 /// Clay text-measurement callback (C calling-convention)
@@ -111,7 +130,7 @@ pub fn renderBackground(state: *RenderState) void {
 
     // Darkening overlay RGBA(0,0,0,180)
     _ = c.SDL_SetRenderDrawBlendMode(state.renderer, c.SDL_BLENDMODE_BLEND);
-    _ = c.SDL_SetRenderDrawColor(state.renderer, 0, 0, 0, 180);
+    _ = c.SDL_SetRenderDrawColor(state.renderer, 0x1E, 0x0F, 0x3C, 180);
     const overlay = c.SDL_FRect{ .x = 0, .y = 0, .w = state.window_width, .h = state.window_height };
     _ = c.SDL_RenderFillRect(state.renderer, &overlay);
 }

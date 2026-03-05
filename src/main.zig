@@ -13,6 +13,8 @@ const updater_mod = @import("updater.zig");
 // ── Embedded assets ───────────────────────────────────────────────────
 const bg_data = @embedFile("assets/background.jpg");
 const font_data = @embedFile("assets/MinecraftStandard.otf");
+const logo_data = @embedFile("assets/flint-logo.png");
+const text_logo_data = @embedFile("assets/flint-text.png");
 
 fn clayErrorHandler(err: c.Clay_ErrorData) callconv(.c) void {
     const msg = err.errorText;
@@ -61,6 +63,9 @@ pub fn main() !void {
     if (update_thread) |t| t.detach();
 
     // ── SDL3 init ─────────────────────────────────────────────────────
+    _ = c.SDL_SetAppMetadata("Flint", "1.0", "com.synomal.flint");
+    _ = c.SDL_SetHint(c.SDL_HINT_APP_ID, "com.synomal.flint");
+
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
         std.log.err("SDL_Init: {s}", .{c.SDL_GetError()});
         return;
@@ -86,9 +91,55 @@ pub fn main() !void {
     _ = c.SDL_SetWindowMinimumSize(window.?, 854, 480);
     _ = c.SDL_StartTextInput(window.?);
 
+    // ── Window Icon ──
+    var icon_w: c_int = 0;
+    var icon_h: c_int = 0;
+    var icon_ch: c_int = 0;
+    const icon_pixels = c.stbi_load_from_memory(
+        logo_data.ptr,
+        @intCast(logo_data.len),
+        &icon_w,
+        &icon_h,
+        &icon_ch,
+        4,
+    );
+    if (icon_pixels != null) {
+        std.log.info("Loaded icon asset: {d}x{d} ({d} channels)", .{ icon_w, icon_h, icon_ch });
+        const icon_surf = c.SDL_CreateSurfaceFrom(icon_w, icon_h, c.SDL_PIXELFORMAT_RGBA32, @ptrCast(icon_pixels), icon_w * 4);
+        if (icon_surf != null) {
+            var final_surf = icon_surf;
+            if (icon_w != icon_h) {
+                const size = if (icon_w > icon_h) icon_w else icon_h;
+                const square_surf = c.SDL_CreateSurface(size, size, c.SDL_PIXELFORMAT_RGBA32);
+                if (square_surf != null) {
+                    const dst_rect = c.SDL_Rect{ .x = 0, .y = 0, .w = size, .h = size };
+                    _ = c.SDL_BlitSurfaceScaled(icon_surf, null, square_surf, &dst_rect, c.SDL_SCALEMODE_LINEAR);
+                    final_surf = square_surf;
+                }
+            }
+
+            if (!c.SDL_SetWindowIcon(window.?, final_surf)) {
+                std.log.err("SDL_SetWindowIcon failed: {s}", .{c.SDL_GetError()});
+            } else {
+                std.log.info("Successfully set window icon (square resized)", .{});
+            }
+
+            if (final_surf != icon_surf) c.SDL_DestroySurface(final_surf);
+            c.SDL_DestroySurface(icon_surf);
+        } else {
+            std.log.err("Failed to create icon surface: {s}", .{c.SDL_GetError()});
+        }
+        c.stbi_image_free(icon_pixels);
+    } else {
+        std.log.err("Failed to load icon pixels: {s}", .{c.stbi_failure_reason()});
+    }
+
     // ── Renderer init (asset loading) ─────────────────────────────────
-    var render_state = renderer_mod.init(sdl_renderer.?, bg_data, font_data);
+    var render_state = renderer_mod.init(sdl_renderer.?, bg_data, font_data, logo_data, text_logo_data);
     defer renderer_mod.deinit(&render_state);
+
+    ui.ui_state.logo_texture = render_state.logo_texture;
+    ui.ui_state.text_logo_texture = render_state.text_logo_texture;
 
     // ── Clay init ─────────────────────────────────────────────────────
     const clay_size = c.Clay_MinMemorySize();

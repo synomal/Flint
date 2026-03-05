@@ -31,6 +31,10 @@ pub const UiState = struct {
     game_version_len: usize = 0,
     active_field: ActiveField = .none,
 
+    // Branding textures (set from main.zig)
+    logo_texture: ?*c.SDL_Texture = null,
+    text_logo_texture: ?*c.SDL_Texture = null,
+
     // Edit buffers for input fields (persist until Clay renders)
     username_buf: [64]u8 = [_]u8{0} ** 64,
     username_len: usize = 0,
@@ -133,20 +137,20 @@ fn rgba(r: f32, g: f32, b: f32, a: f32) c.Clay_Color {
 }
 
 // Color constants matching the Minecraft Launcher spec
-const COLOR_HEADER_BG = rgba(0x11, 0x11, 0x11, 0xBB);
-const COLOR_SIDEBAR_BG = rgba(0x2A, 0x2A, 0x2A, 0xAA);
-const COLOR_PANEL_BG = rgba(0x1E, 0x1E, 0x1E, 0x99);
-const COLOR_BOTTOM_BG = rgba(0x11, 0x11, 0x11, 0xBB);
+const COLOR_HEADER_BG = rgba(0x1A, 0x11, 0x2A, 0xBB);
+const COLOR_SIDEBAR_BG = rgba(0x35, 0x2A, 0x45, 0xAA);
+const COLOR_PANEL_BG = rgba(0x2A, 0x1E, 0x3A, 0x99);
+const COLOR_BOTTOM_BG = rgba(0x1A, 0x11, 0x2A, 0xBB);
 const COLOR_WHITE = rgba(0xFF, 0xFF, 0xFF, 0xFF);
 const COLOR_MUTED = rgba(0xAA, 0xAA, 0xAA, 0xFF);
-const COLOR_GREEN = rgba(0x5A, 0x9E, 0x28, 0xFF);
-const COLOR_TAB_ACTIVE = rgba(0x1E, 0x1E, 0x1E, 0xFF);
+const COLOR_GREEN = rgba(0x5D, 0x23, 0xA4, 0xFF);
+const COLOR_TAB_ACTIVE = rgba(0x2A, 0x1E, 0x3A, 0xFF);
 const COLOR_TRANSPARENT = rgba(0, 0, 0, 0);
-const COLOR_BORDER = rgba(0x3A, 0x3A, 0x3A, 0xFF);
-const COLOR_INPUT_BG = rgba(0x0A, 0x0A, 0x0A, 0xCC);
-const COLOR_INPUT_BORDER = rgba(0x55, 0x55, 0x55, 0xFF);
-const COLOR_CARD_BG = rgba(0x25, 0x25, 0x25, 0x88);
-const COLOR_CARD_ACTIVE = rgba(0x35, 0x35, 0x35, 0xAA);
+const COLOR_BORDER = rgba(0x45, 0x35, 0x55, 0xFF);
+const COLOR_INPUT_BG = rgba(0x15, 0x0A, 0x25, 0xCC);
+const COLOR_INPUT_BORDER = rgba(0x6A, 0x4B, 0x9A, 0xFF);
+const COLOR_CARD_BG = rgba(0x30, 0x25, 0x40, 0x88);
+const COLOR_CARD_ACTIVE = rgba(0x40, 0x35, 0x55, 0xAA);
 const COLOR_YELLOW = rgba(0xDA, 0xAA, 0x20, 0xFF);
 const COLOR_BLUE = rgba(0x3A, 0x7A, 0xDA, 0xFF);
 const COLOR_GRAY = rgba(0x66, 0x66, 0x66, 0xFF);
@@ -200,6 +204,17 @@ fn textElement(s: []const u8, font_size: u16, color: c.Clay_Color) void {
     }));
 
     c.Clay__CloseElement(); // Close textElement container
+}
+
+fn imageElement(name: []const u8, texture: ?*c.SDL_Texture, width: f32, height: f32) void {
+    if (texture) |tex| {
+        openElement(name);
+        c.Clay__ConfigureOpenElement(.{
+            .layout = .{ .sizing = .{ .width = fixedW(width), .height = fixedH(height) } },
+            .image = .{ .imageData = tex },
+        });
+        closeElement();
+    }
 }
 
 fn growSize() c.Clay_Sizing {
@@ -281,7 +296,7 @@ fn layoutHeader() void {
     });
 
     // Title
-    textElement("Flint", 16, COLOR_WHITE);
+    imageElement("TextLogo", ui_state.text_logo_texture, 82, 20);
 
     // Spacer
     openElement("HSp1");
@@ -812,11 +827,8 @@ fn layoutBottomBar() void {
             .sizing = .{ .width = fixedW(36), .height = fixedH(36) },
             .childAlignment = .{ .x = c.CLAY_ALIGN_X_CENTER, .y = c.CLAY_ALIGN_Y_CENTER },
         },
-        .backgroundColor = COLOR_INPUT_BG,
-        .cornerRadius = uniformCorner(4),
-        .border = .{ .color = COLOR_INPUT_BORDER, .width = uniformBorder(1) },
     });
-    textElement("F", 12, COLOR_WHITE);
+    imageElement("Logo", ui_state.logo_texture, 36, 36);
     closeElement();
 
     // Input fields
