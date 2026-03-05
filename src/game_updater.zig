@@ -309,8 +309,9 @@ pub fn downloadGame(allocator: std.mem.Allocator) !void {
     var slug_len: usize = 0;
     for (sha) |c| {
         if (slug_len >= version_slug_buf.len - 1) break;
+        if (c == 'Z') continue;
         version_slug_buf[slug_len] = switch (c) {
-            ':', 'T', 'Z', ' ' => '-',
+            ':', 'T', ' ' => '-',
             else => c,
         };
         slug_len += 1;
