@@ -21,18 +21,13 @@ jobs:
         with:
           fetch-depth: 0 # Full history so 'git rev-parse HEAD' gets the correct commit
 
-      - name: Fetch setup-zig from Codeberg
-        uses: actions/checkout@v4
-        with:
-          repository: mlugg/setup-zig
-          repository-url: https://codeberg.org/
-          ref: v1
-          path: .github/actions/setup-zig
-
-      - name: Setup Zig
-        uses: ./.github/actions/setup-zig
-        with:
-          version: 0.15.2
+      - name: Setup Zig 0.15.2
+        run: |
+          ZIG_URL=$(curl -s https://ziglang.org/download/index.json | jq -r '.master."x86_64-linux".tarball')
+          wget -qO zig.tar.xz "$ZIG_URL"
+          tar -xf zig.tar.xz
+          mv zig-linux-x86_64-* /opt/zig
+          echo "/opt/zig" >> $GITHUB_PATH
 
       - name: Build Linux
         run: zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe
