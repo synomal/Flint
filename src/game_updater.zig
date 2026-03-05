@@ -386,29 +386,28 @@ pub fn downloadGame(allocator: std.mem.Allocator) !void {
     var l_child = std.process.Child.init(&.{ "unzip", "-l", zip_path }, allocator);
     l_child.stdout_behavior = .Pipe;
     l_child.stderr_behavior = .Ignore;
-    if (l_child.spawn()) |_| {
-        if (l_child.stdout) |out| {
-            const contents = out.readToEndAlloc(allocator, 10 * 1024 * 1024) catch "";
-            defer if (contents.len > 0) allocator.free(contents);
-            var lines = std.mem.splitBackwardsScalar(u8, contents, '\n');
-            var total_bytes: u64 = 0;
-            while (lines.next()) |line| {
-                const tr_line = std.mem.trim(u8, line, " \r\t");
-                if (tr_line.len == 0) continue;
-                var words = std.mem.tokenizeAny(u8, tr_line, " \t");
-                if (words.next()) |first_word| {
-                    if (std.fmt.parseInt(u64, first_word, 10)) |val| {
-                        total_bytes = val;
-                        break;
-                    } else |_| {}
-                }
-            }
-            if (total_bytes > 0) {
-                game_download_progress.total_bytes = total_bytes;
+    l_child.spawn() catch return;
+    if (l_child.stdout) |out| {
+        const contents = out.readToEndAlloc(allocator, 10 * 1024 * 1024) catch "";
+        defer if (contents.len > 0) allocator.free(contents);
+        var lines = std.mem.splitBackwardsScalar(u8, contents, '\n');
+        var total_bytes: u64 = 0;
+        while (lines.next()) |line| {
+            const tr_line = std.mem.trim(u8, line, " \r\t");
+            if (tr_line.len == 0) continue;
+            var words = std.mem.tokenizeAny(u8, tr_line, " \t");
+            if (words.next()) |first_word| {
+                if (std.fmt.parseInt(u64, first_word, 10)) |val| {
+                    total_bytes = val;
+                    break;
+                } else |_| {}
             }
         }
-        _ = l_child.wait() catch {};
+        if (total_bytes > 0) {
+            game_download_progress.total_bytes = total_bytes;
+        }
     }
+    _ = l_child.wait() catch {};
 
     std.debug.print("Download complete ({} bytes), extracting. Total uncompressed size: {}\n", .{ bytes_written, game_download_progress.total_bytes });
 
