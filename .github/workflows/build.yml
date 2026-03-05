@@ -62,12 +62,10 @@ jobs:
         if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
         id: bump_version
         run: |
-          # Get the latest tag, default to v0.1.0 if none exists
           LATEST=$(git tag --list 'v*' --sort=-version:refname | head -n1)
           if [ -z "$LATEST" ]; then
             NEW_TAG="v0.1.0"
           else
-            # Split into parts and increment patch
             VERSION="${LATEST#v}"
             MAJOR=$(echo $VERSION | cut -d. -f1)
             MINOR=$(echo $VERSION | cut -d. -f2)
@@ -80,15 +78,15 @@ jobs:
 
       - name: Push new tag
         if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag ${{ steps.bump_version.outputs.new_tag }}
           git push origin ${{ steps.bump_version.outputs.new_tag }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
 
-      - name: Publish Release (master → rolling latest pre-release)
+      - name: Publish Release (master push)
         if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
