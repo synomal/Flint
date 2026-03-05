@@ -34,27 +34,11 @@ jobs:
           mv zig-out/bin/flint flint-linux-x86_64
           tar -czvf flint-linux-x86_64.tar.gz flint-linux-x86_64
 
-      - name: Build Windows
-        run: |
-          rm -rf zig-out zig-cache
-          zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe
-
-      - name: Package Windows
-        run: |
-          mv zig-out/bin/flint.exe flint-windows-x86_64.exe
-          zip flint-windows-x86_64.zip flint-windows-x86_64.exe
-
       - name: Upload Linux Artifact
         uses: actions/upload-artifact@v4
         with:
           name: flint-linux-x86_64.tar.gz
           path: flint-linux-x86_64.tar.gz
-
-      - name: Upload Windows Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: flint-windows-x86_64.zip
-          path: flint-windows-x86_64.zip
 
       - name: Bump version and push tag
         if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'

@@ -28,20 +28,8 @@ jobs:
           mv zig-out/bin/flint flint-linux-x86_64
           tar -czvf flint-linux-x86_64.tar.gz flint-linux-x86_64
 
-      - name: Build Windows
-        run: |
-          rm -rf zig-out zig-cache
-          zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe
-
-      - name: Package Windows
-        run: |
-          mv zig-out/bin/flint.exe flint-windows-x86_64.exe
-          zip flint-windows-x86_64.zip flint-windows-x86_64.exe
-
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            flint-linux-x86_64.tar.gz
-            flint-windows-x86_64.zip
+          files: flint-linux-x86_64.tar.gz
           generate_release_notes: true
