@@ -232,6 +232,8 @@ pub fn main() !void {
                         ui.handleBackspace();
                     } else if (event.key.key == c.SDLK_RETURN or event.key.key == c.SDLK_RETURN2) {
                         ui.handleReturn();
+                    } else if (event.key.key == c.SDLK_TAB) {
+                        ui.handleTab();
                     }
                 },
                 else => {},

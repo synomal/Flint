@@ -104,8 +104,8 @@ fn moveContentsToSaves(allocator: std.mem.Allocator, src_dir: []const u8, saves_
 }
 
 /// Spawn the game process with preset connection info
-/// Exe args: Minecraft.Client.exe -name <username> -ip <ip> -port <port>
-pub fn spawnGame(allocator: std.mem.Allocator, version_dir: []const u8, saves_path: []const u8, preset: anytype) !void {
+/// Exe args: Minecraft.Client.exe -name <username> [-ip <ip> -port <port>]
+pub fn spawnGame(allocator: std.mem.Allocator, version_dir: []const u8, saves_path: []const u8, preset: anytype, multiplayer: bool) !void {
     // Ensure saves link
     try ensureSavesLink(allocator, version_dir, saves_path);
 
@@ -124,13 +124,15 @@ pub fn spawnGame(allocator: std.mem.Allocator, version_dir: []const u8, saves_pa
         try argv.append(allocator, "Player");
     }
 
-    if (preset.ip.len > 0) {
-        try argv.append(allocator, "-ip");
-        try argv.append(allocator, preset.ip);
-    }
-    if (preset.port.len > 0) {
-        try argv.append(allocator, "-port");
-        try argv.append(allocator, preset.port);
+    if (multiplayer) {
+        if (preset.ip.len > 0) {
+            try argv.append(allocator, "-ip");
+            try argv.append(allocator, preset.ip);
+        }
+        if (preset.port.len > 0) {
+            try argv.append(allocator, "-port");
+            try argv.append(allocator, preset.port);
+        }
     }
 
     if (comptime builtin.os.tag == .linux) {
@@ -169,12 +171,12 @@ pub fn spawnGame(allocator: std.mem.Allocator, version_dir: []const u8, saves_pa
 }
 
 /// Convenience wrapper for the UI
-pub fn launch(allocator: std.mem.Allocator, config: @import("config.zig").Config) !void {
+pub fn launch(allocator: std.mem.Allocator, config: @import("config.zig").Config, multiplayer: bool) !void {
     if (game_status == .running) return;
 
     if (try findLatestVersion(allocator)) |version_dir| {
         defer allocator.free(version_dir);
-        try spawnGame(allocator, version_dir, config.saves_path, config.presets[config.active_preset]);
+        try spawnGame(allocator, version_dir, config.saves_path, config.presets[config.active_preset], multiplayer);
     } else {
         std.debug.print("No game version found to launch.\n", .{});
     }
