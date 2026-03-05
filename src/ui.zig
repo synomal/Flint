@@ -413,7 +413,7 @@ fn layoutHeader() void {
     });
 
     // Title
-    imageElement("TextLogo", ui_state.text_logo_texture, 82, 20);
+    imageElement("TextLogo", ui_state.text_logo_texture, 115, 28);
 
     // Spacer
     openElement("HSp1");
@@ -514,9 +514,9 @@ fn layoutSidebar() void {
         .backgroundColor = COLOR_SIDEBAR_BG,
     });
 
-    layoutTab("PLAY", .play);
-    layoutTab("VERSIONS", .versions);
-    layoutTab("SETTINGS", .settings);
+    layoutTab("Play", .play);
+    layoutTab("Versions", .versions);
+    layoutTab("Settings", .settings);
 
     closeElement(); // Sidebar
 }
@@ -587,7 +587,7 @@ fn layoutPlayTab() void {
     }
 
     // Add Preset Button - standard text button
-    button("AddPrsBtn", "ADD PROFILE", FONT_SIZE_NORMAL, COLOR_GREEN, fitWidth());
+    button("AddPrsBtn", "Add Profile", FONT_SIZE_NORMAL, COLOR_GREEN, fitWidth());
 
     closeElement(); // PrsCont
 }
@@ -638,7 +638,7 @@ fn layoutPresetRow(index: u32) void {
             .backgroundColor = COLOR_RED,
             .cornerRadius = uniformCorner(4),
         });
-        c.Clay__OpenTextElement(clayStr("DELETE"), c.Clay__StoreTextElementConfig(.{
+        c.Clay__OpenTextElement(clayStr("Delete"), c.Clay__StoreTextElementConfig(.{
             .fontSize = FONT_SIZE_SMALL,
             .textColor = COLOR_WHITE,
             .fontId = FONT_ID,
@@ -774,7 +774,7 @@ fn layoutVersionsTab() void {
 // ── Settings Tab ───────────────────────────────────────────────────────
 
 fn layoutSettingsTab() void {
-    textElement("SAVES FOLDER", FONT_SIZE_SMALL, COLOR_MUTED);
+    textElement("Saves Folder", FONT_SIZE_SMALL, COLOR_MUTED);
 
     // Saves path row
     openElement("SvRow");
@@ -787,7 +787,7 @@ fn layoutSettingsTab() void {
     });
 
     // Path display
-    layoutInputField("Saves", "SavesPath", 400, .saves_path);
+    layoutInputField("", "SavesPath", 400, .saves_path);
 
     // Change button
     button("ChBtn", "Change", FONT_SIZE_SMALL, COLOR_GREEN, fitWidth());
@@ -801,7 +801,7 @@ fn layoutSettingsTab() void {
 
     // Wine section (Linux only)
     if (comptime builtin.os.tag == .linux) {
-        textElement("WINE", FONT_SIZE_SMALL, COLOR_MUTED);
+        textElement("Wine", FONT_SIZE_SMALL, COLOR_MUTED);
 
         openElement("WineR");
         c.Clay__ConfigureOpenElement(.{
@@ -830,7 +830,7 @@ fn layoutSettingsTab() void {
     }
 
     // Launcher section
-    textElement("LAUNCHER", FONT_SIZE_SMALL, COLOR_MUTED);
+    textElement("Launcher", FONT_SIZE_SMALL, COLOR_MUTED);
 
     openElement("LaunchR");
     c.Clay__ConfigureOpenElement(.{
@@ -910,10 +910,10 @@ fn layoutBottomBar() void {
     });
 
     // Singleplayer Button
-    button("Singleplayer", "START SINGLEPLAYER", FONT_SIZE_NORMAL, launch_bg, growWidth());
+    button("Singleplayer", "Start Singleplayer", FONT_SIZE_NORMAL, launch_bg, growWidth());
 
     // Multiplayer Button
-    button("Multiplayer", "START MULTIPLAYER", FONT_SIZE_NORMAL, launch_bg, growWidth());
+    button("Multiplayer", "Start Multiplayer", FONT_SIZE_NORMAL, launch_bg, growWidth());
 
     closeElement(); // LaunchContainer
 
@@ -930,7 +930,7 @@ fn layoutInputField(label: []const u8, comp_id: []const u8, width: f32, field: A
         },
     });
 
-    textElement(label, FONT_SIZE_SMALL, COLOR_MUTED);
+    if (label.len > 0) textElement(label, FONT_SIZE_SMALL, COLOR_MUTED);
 
     const is_active = ui_state.active_field == field;
     const border_color = if (is_active) COLOR_GREEN else COLOR_INPUT_BORDER;
@@ -1046,11 +1046,11 @@ fn layoutInputField(label: []const u8, comp_id: []const u8, width: f32, field: A
 
 pub fn handleClick() void {
     // Check sidebar tab clicks
-    if (c.Clay_PointerOver(clayId("PLAY"))) {
+    if (c.Clay_PointerOver(clayId("Play"))) {
         ui_state.active_tab = .play;
-    } else if (c.Clay_PointerOver(clayId("VERSIONS"))) {
+    } else if (c.Clay_PointerOver(clayId("Versions"))) {
         ui_state.active_tab = .versions;
-    } else if (c.Clay_PointerOver(clayId("SETTINGS"))) {
+    } else if (c.Clay_PointerOver(clayId("Settings"))) {
         ui_state.active_tab = .settings;
     }
 
