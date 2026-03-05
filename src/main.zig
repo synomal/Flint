@@ -74,7 +74,7 @@ pub fn main() !void {
 
     var window: ?*c.SDL_Window = null;
     var sdl_renderer: ?*c.SDL_Renderer = null;
-    window = c.SDL_CreateWindow("Flint", 800, 600, c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    window = c.SDL_CreateWindow("Flint", 800, 600, c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY | c.SDL_WINDOW_HIDDEN);
     if (window == null) {
         std.log.err("Window: {s}", .{c.SDL_GetError()});
         return;
@@ -133,6 +133,8 @@ pub fn main() !void {
     } else {
         std.log.err("Failed to load icon pixels: {s}", .{c.stbi_failure_reason()});
     }
+
+    _ = c.SDL_ShowWindow(window.?);
 
     // ── Renderer init (asset loading) ─────────────────────────────────
     var render_state = renderer_mod.init(sdl_renderer.?, bg_data, font_data, logo_data, text_logo_data);
