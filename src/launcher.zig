@@ -72,6 +72,7 @@ fn createLink(allocator: std.mem.Allocator, link_path: []const u8, target: []con
         // cmd /c mklink /j <link> <target>
         const argv = &[_][]const u8{ "cmd", "/c", "mklink", "/j", link_path, target };
         var child = std.process.Child.init(argv, allocator);
+        child.create_no_window = true;
         child.stdout_behavior = .Ignore;
         child.stderr_behavior = .Ignore;
         const term = try child.spawnAndWait();
@@ -170,6 +171,7 @@ pub fn spawnGame(allocator: std.mem.Allocator, version_dir: []const u8, saves_pa
         // Windows: Native execution
         var child = std.process.Child.init(argv.items, allocator);
         child.cwd = version_dir;
+        child.create_no_window = true;
         try child.spawn();
         game_child = child;
     }
