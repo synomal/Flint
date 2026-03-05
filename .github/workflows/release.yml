@@ -1,19 +1,27 @@
-name: Release
+name: Build and Release
 
 on:
   push:
-    tags: [ 'v*' ]
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
 
 jobs:
-  release:
-    name: Release
+  build:
+    name: Build
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      new_tag: ${{ steps.bump_version.outputs.new_tag }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN }}
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2.2.1
@@ -28,8 +36,54 @@ jobs:
           mv zig-out/bin/flint flint-linux-x86_64
           tar -czvf flint-linux-x86_64.tar.gz flint-linux-x86_64
 
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flint-linux-x86_64.tar.gz
+          path: flint-linux-x86_64.tar.gz
+
+      - name: Bump version and push tag
+        if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+        id: bump_version
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          LATEST=$(git tag --list 'v*' --sort=-version:refname | head -n1)
+          if [ -z "$LATEST" ]; then
+            NEW_TAG="v0.1.0"
+          else
+            VERSION="${LATEST#v}"
+            MAJOR=$(echo $VERSION | cut -d. -f1)
+            MINOR=$(echo $VERSION | cut -d. -f2)
+            PATCH=$(echo $VERSION | cut -d. -f3)
+            PATCH=$((PATCH + 1))
+            NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
+          echo "Bumped version to $NEW_TAG"
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag $NEW_TAG
+          git push origin $NEW_TAG
+
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Linux Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: flint-linux-x86_64.tar.gz
+
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.build.outputs.new_tag }}
+          name: ${{ needs.build.outputs.new_tag }}
           files: flint-linux-x86_64.tar.gz
           generate_release_notes: true
