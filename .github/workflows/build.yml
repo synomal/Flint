@@ -3,7 +3,7 @@ name: Build and Release
 on:
   push:
     branches: [ master ]
-    tags: [ '*' ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ master ]
   workflow_dispatch:
@@ -19,7 +19,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Full history so 'git rev-parse HEAD' gets the correct commit
+          fetch-depth: 0
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2.2.1
@@ -36,7 +36,6 @@ jobs:
 
       - name: Build Windows
         run: |
-          # Clean first in case of output conflicts
           rm -rf zig-out zig-cache
           zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe
 
@@ -57,9 +56,51 @@ jobs:
           name: flint-windows-x86_64.zip
           path: flint-windows-x86_64.zip
 
-      - name: Publish Release
+      # --- Auto-increment version on master push ---
+      - name: Get latest tag and bump patch version
+        if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+        id: bump_version
+        run: |
+          # Get the latest tag, default to v0.1.0 if none exists
+          LATEST=$(git tag --list 'v*' --sort=-version:refname | head -n1)
+          if [ -z "$LATEST" ]; then
+            NEW_TAG="v0.1.0"
+          else
+            # Split into parts and increment patch
+            VERSION="${LATEST#v}"
+            MAJOR=$(echo $VERSION | cut -d. -f1)
+            MINOR=$(echo $VERSION | cut -d. -f2)
+            PATCH=$(echo $VERSION | cut -d. -f3)
+            PATCH=$((PATCH + 1))
+            NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "Bumped version to $NEW_TAG"
+
+      - name: Push new tag
+        if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.bump_version.outputs.new_tag }}
+          git push origin ${{ steps.bump_version.outputs.new_tag }}
+
+      - name: Publish Release (master → rolling latest pre-release)
+        if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          tag_name: ${{ steps.bump_version.outputs.new_tag }}
+          name: ${{ steps.bump_version.outputs.new_tag }}
+          prerelease: false
+          files: |
+            flint-linux-x86_64.tar.gz
+            flint-windows-x86_64.zip
+          generate_release_notes: true
+
+      # --- Proper versioned release on manual tag push ---
+      - name: Publish Release (manual tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             flint-linux-x86_64.tar.gz
