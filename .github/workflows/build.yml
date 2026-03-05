@@ -1,9 +1,8 @@
-name: Build and Release
+name: Build
 
 on:
   push:
     branches: [ master ]
-    tags: [ 'v*' ]
   pull_request:
     branches: [ master ]
   workflow_dispatch:
@@ -57,10 +56,10 @@ jobs:
           name: flint-windows-x86_64.zip
           path: flint-windows-x86_64.zip
 
-      # --- Auto-increment version on master push ---
-      - name: Get latest tag and bump patch version
+      - name: Bump version and push tag
         if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
-        id: bump_version
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           LATEST=$(git tag --list 'v*' --sort=-version:refname | head -n1)
           if [ -z "$LATEST" ]; then
@@ -73,37 +72,8 @@ jobs:
             PATCH=$((PATCH + 1))
             NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
           fi
-          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
           echo "Bumped version to $NEW_TAG"
-
-      - name: Push new tag
-        if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ steps.bump_version.outputs.new_tag }}
-          git push origin ${{ steps.bump_version.outputs.new_tag }}
-
-      - name: Publish Release (master push)
-        if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.bump_version.outputs.new_tag }}
-          name: ${{ steps.bump_version.outputs.new_tag }}
-          prerelease: false
-          files: |
-            flint-linux-x86_64.tar.gz
-            flint-windows-x86_64.zip
-          generate_release_notes: true
-
-      # --- Proper versioned release on manual tag push ---
-      - name: Publish Release (manual tag)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            flint-linux-x86_64.tar.gz
-            flint-windows-x86_64.zip
-          generate_release_notes: true
+          git tag $NEW_TAG
+          git push origin $NEW_TAG

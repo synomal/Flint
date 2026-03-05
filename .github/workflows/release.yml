@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2.2.1
+        with:
+          version: 0.15.2
+
+      - name: Build Linux
+        run: zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe
+
+      - name: Package Linux
+        run: |
+          mv zig-out/bin/flint flint-linux-x86_64
+          tar -czvf flint-linux-x86_64.tar.gz flint-linux-x86_64
+
+      - name: Build Windows
+        run: |
+          rm -rf zig-out zig-cache
+          zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe
+
+      - name: Package Windows
+        run: |
+          mv zig-out/bin/flint.exe flint-windows-x86_64.exe
+          zip flint-windows-x86_64.zip flint-windows-x86_64.exe
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            flint-linux-x86_64.tar.gz
+            flint-windows-x86_64.zip
+          generate_release_notes: true
