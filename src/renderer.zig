@@ -37,25 +37,22 @@ pub fn init(
     _ = c.TTF_Init();
     state.text_engine = c.TTF_CreateRendererTextEngine(sdl_renderer);
 
-    // Write embedded font to tmp file (SDL3_ttf needs IOStream)
-    const tmp_path = "/tmp/lcelauncher_font.otf";
-    if (std.fs.createFileAbsolute(tmp_path, .{})) |f| {
-        f.writeAll(font_data) catch {};
-        f.close();
-        const rw = c.SDL_IOFromFile(tmp_path, "rb");
-        if (rw != null) {
-            state.font = c.TTF_OpenFontIO(rw, true, 16);
-            if (state.font == null) {
-                std.log.err("TTF_OpenFontIO failed: {s}", .{c.SDL_GetError()});
-            } else {
-                _ = c.TTF_SetFontHinting(state.font, c.TTF_HINTING_NONE);
-                std.log.info("Loaded TTF. Family: {s}, face: {s}", .{
-                    c.TTF_GetFontFamilyName(state.font),
-                    c.TTF_GetFontStyleName(state.font),
-                });
-            }
+    // Write embedded font to TTF_OpenFontIO from memory (cross-platform, replaces /tmp path)
+    const rw = c.SDL_IOFromConstMem(font_data.ptr, @intCast(font_data.len));
+    if (rw != null) {
+        state.font = c.TTF_OpenFontIO(rw, true, 16);
+        if (state.font == null) {
+            std.log.err("TTF_OpenFontIO failed: {s}", .{c.SDL_GetError()});
+        } else {
+            _ = c.TTF_SetFontHinting(state.font, c.TTF_HINTING_NONE);
+            std.log.info("Loaded TTF from memory. Family: {s}, face: {s}", .{
+                c.TTF_GetFontFamilyName(state.font),
+                c.TTF_GetFontStyleName(state.font),
+            });
         }
-    } else |_| {}
+    } else {
+        std.log.err("SDL_IOFromConstMem failed: {s}", .{c.SDL_GetError()});
+    }
 
     return state;
 }

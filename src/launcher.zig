@@ -33,11 +33,10 @@ pub fn ensureSavesLink(allocator: std.mem.Allocator, version_dir: []const u8, sa
     var gamehdd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const gamehdd_path = try std.fmt.bufPrint(&gamehdd_buf, "{s}/Windows64/GameHDD", .{version_dir});
 
-    // Check what exists at GameHDD
     const stat = std.fs.cwd().statFile(gamehdd_path) catch |err| switch (err) {
         error.FileNotFound => {
             // Does not exist — create symlink/junction
-            try createLink(gamehdd_path, saves_path);
+            try createLink(allocator, gamehdd_path, saves_path);
             return;
         },
         else => return err,
@@ -50,7 +49,7 @@ pub fn ensureSavesLink(allocator: std.mem.Allocator, version_dir: []const u8, sa
             // It's a real directory — move contents to saves_path, then replace with link
             try moveContentsToSaves(allocator, gamehdd_path, saves_path);
             try std.fs.deleteTreeAbsolute(gamehdd_path);
-            try createLink(gamehdd_path, saves_path);
+            try createLink(allocator, gamehdd_path, saves_path);
             return;
         },
         else => return err,
@@ -64,14 +63,22 @@ pub fn ensureSavesLink(allocator: std.mem.Allocator, version_dir: []const u8, sa
 
     // Wrong target — delete and re-create
     try std.fs.deleteFileAbsolute(gamehdd_path);
-    try createLink(gamehdd_path, saves_path);
+    try createLink(allocator, gamehdd_path, saves_path);
 }
 
-fn createLink(link_path: []const u8, target: []const u8) !void {
+fn createLink(allocator: std.mem.Allocator, link_path: []const u8, target: []const u8) !void {
     if (comptime builtin.os.tag == .windows) {
-        // Windows: use directory junction via NTFS reparse point
-        // For now, use symlink as placeholder — full junction impl requires Win32 API
-        try std.fs.symLinkAbsolute(target, link_path, .{ .is_directory = true });
+        // Windows: use directory junction via mklink /j
+        // cmd /c mklink /j <link> <target>
+        const argv = &[_][]const u8{ "cmd", "/c", "mklink", "/j", link_path, target };
+        var child = std.process.Child.init(argv, allocator);
+        child.stdout_behavior = .Ignore;
+        child.stderr_behavior = .Ignore;
+        const term = try child.spawnAndWait();
+        switch (term) {
+            .Exited => |code| if (code != 0) return error.SystemResources,
+            else => return error.SystemResources,
+        }
     } else {
         // Linux: standard symlink
         try std.fs.symLinkAbsolute(target, link_path, .{});

@@ -20,13 +20,14 @@ pub fn getBaseDir(allocator: std.mem.Allocator) ![]const u8 {
 
     const home = if (comptime builtin.os.tag == .windows)
         std.process.getEnvVarOwned(allocator, "USERPROFILE") catch
-            std.process.getEnvVarOwned(allocator, "HOMEDRIVE") catch
+            std.process.getEnvVarOwned(allocator, "HOMEPATH") catch // Try HOMEPATH if USERPROFILE is missing
             return error.UnsafePath
     else
         std.process.getEnvVarOwned(allocator, "HOME") catch return error.UnsafePath;
     defer allocator.free(home);
 
-    const path = try std.fmt.bufPrint(&base_dir_buf, "{s}/.flintlauncher/", .{home});
+    const sep = std.fs.path.sep_str;
+    const path = try std.fmt.bufPrint(&base_dir_buf, "{s}{s}.flintlauncher{s}", .{ home, sep, sep });
     base_dir_len = path.len;
     base_dir_initialized = true;
     return path;
