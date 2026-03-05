@@ -142,6 +142,8 @@ pub fn main() !void {
 
     ui.ui_state.logo_texture = render_state.logo_texture;
     ui.ui_state.text_logo_texture = render_state.text_logo_texture;
+    ui.ui_state.font = render_state.font;
+    ui.ui_state.allocator = allocator;
 
     // ── Clay init ─────────────────────────────────────────────────────
     const clay_size = c.Clay_MinMemorySize();
@@ -230,6 +232,12 @@ pub fn main() !void {
                 c.SDL_EVENT_KEY_DOWN => {
                     if (event.key.key == c.SDLK_BACKSPACE) {
                         ui.handleBackspace();
+                    } else if (event.key.key == c.SDLK_DELETE) {
+                        ui.handleDelete();
+                    } else if (event.key.key == c.SDLK_LEFT) {
+                        ui.handleLeftArrow();
+                    } else if (event.key.key == c.SDLK_RIGHT) {
+                        ui.handleRightArrow();
                     } else if (event.key.key == c.SDLK_RETURN or event.key.key == c.SDLK_RETURN2) {
                         ui.handleReturn();
                     } else if (event.key.key == c.SDLK_TAB) {

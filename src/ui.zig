@@ -6,6 +6,7 @@ const config_mod = @import("config.zig");
 const game_updater = @import("game_updater.zig");
 const updater = @import("updater.zig");
 const launcher_mod = @import("launcher.zig");
+const renderer_mod = @import("renderer.zig");
 
 /// Active sidebar tab
 pub const Tab = enum(u8) {
@@ -31,10 +32,12 @@ pub const UiState = struct {
     game_version_display: [64]u8 = [_]u8{0} ** 64,
     game_version_len: usize = 0,
     active_field: ActiveField = .none,
+    allocator: std.mem.Allocator = undefined,
 
     // Branding textures (set from main.zig)
     logo_texture: ?*c.SDL_Texture = null,
     text_logo_texture: ?*c.SDL_Texture = null,
+    font: ?*c.TTF_Font = null,
 
     // Edit buffers for input fields (persist until Clay renders)
     username_buf: [64]u8 = [_]u8{0} ** 64,
@@ -47,6 +50,9 @@ pub const UiState = struct {
     saves_len: usize = 0,
     preset_name_buf: [64]u8 = [_]u8{0} ** 64,
     preset_name_len: usize = 0,
+
+    cursor_pos: usize = 0,
+    scroll_offsets: [6]f32 = [_]f32{0} ** 6,
 
     /// Copy config values into edit buffers
     pub fn syncFromConfig(self: *UiState) void {
@@ -76,6 +82,16 @@ pub const UiState = struct {
         if (self.preset_name_len > 0 and preset.name.ptr != self.preset_name_buf[0..].ptr) {
             @memcpy(self.preset_name_buf[0..self.preset_name_len], preset.name[0..self.preset_name_len]);
         }
+
+        // Set cursor to end of the active field
+        self.cursor_pos = switch (self.active_field) {
+            .username => self.username_len,
+            .ip => self.ip_len,
+            .port => self.port_len,
+            .saves_path => self.saves_len,
+            .preset_name => self.preset_name_len,
+            .none => 0,
+        };
     }
 };
 
@@ -84,35 +100,75 @@ pub var ui_state = UiState{};
 /// Handle a text input character from SDL
 pub fn handleTextInput(text: []const u8) void {
     switch (ui_state.active_field) {
-        .username => appendToBuffer(&ui_state.username_buf, &ui_state.username_len, text),
-        .ip => appendToBuffer(&ui_state.ip_buf, &ui_state.ip_len, text),
-        .port => appendToBuffer(&ui_state.port_buf, &ui_state.port_len, text),
-        .saves_path => appendToBuffer(&ui_state.saves_buf, &ui_state.saves_len, text),
-        .preset_name => appendToBuffer(&ui_state.preset_name_buf, &ui_state.preset_name_len, text),
+        .username => insertAtCursor(&ui_state.username_buf, &ui_state.username_len, text, 16),
+        .ip => insertAtCursor(&ui_state.ip_buf, &ui_state.ip_len, text, 15),
+        .port => insertAtCursor(&ui_state.port_buf, &ui_state.port_len, text, 5),
+        .saves_path => insertAtCursor(&ui_state.saves_buf, &ui_state.saves_len, text, 255),
+        .preset_name => insertAtCursor(&ui_state.preset_name_buf, &ui_state.preset_name_len, text, 64),
         .none => {},
     }
 }
 
 /// Handle backspace key
 pub fn handleBackspace() void {
-    switch (ui_state.active_field) {
-        .username => {
-            if (ui_state.username_len > 0) ui_state.username_len -= 1;
-        },
-        .ip => {
-            if (ui_state.ip_len > 0) ui_state.ip_len -= 1;
-        },
-        .port => {
-            if (ui_state.port_len > 0) ui_state.port_len -= 1;
-        },
-        .saves_path => {
-            if (ui_state.saves_len > 0) ui_state.saves_len -= 1;
-        },
-        .preset_name => {
-            if (ui_state.preset_name_len > 0) ui_state.preset_name_len -= 1;
-        },
-        .none => {},
+    if (ui_state.cursor_pos == 0) return;
+
+    const len = getActiveLen() orelse return;
+    const buf = getActiveBuf() orelse return;
+
+    if (len.* > 0) {
+        const move_len = len.* - ui_state.cursor_pos;
+        if (move_len > 0) {
+            std.mem.copyForwards(u8, buf[ui_state.cursor_pos - 1 .. len.* - 1], buf[ui_state.cursor_pos..len.*]);
+        }
+        len.* -= 1;
+        ui_state.cursor_pos -= 1;
     }
+}
+
+/// Handle delete key
+pub fn handleDelete() void {
+    const len = getActiveLen() orelse return;
+    const buf = getActiveBuf() orelse return;
+
+    if (ui_state.cursor_pos < len.*) {
+        const move_len = len.* - ui_state.cursor_pos - 1;
+        if (move_len > 0) {
+            std.mem.copyForwards(u8, buf[ui_state.cursor_pos .. len.* - 1], buf[ui_state.cursor_pos + 1 .. len.*]);
+        }
+        len.* -= 1;
+    }
+}
+
+pub fn handleLeftArrow() void {
+    if (ui_state.cursor_pos > 0) ui_state.cursor_pos -= 1;
+}
+
+pub fn handleRightArrow() void {
+    const len = getActiveLen() orelse return;
+    if (ui_state.cursor_pos < len.*) ui_state.cursor_pos += 1;
+}
+
+fn getActiveLen() ?*usize {
+    return switch (ui_state.active_field) {
+        .username => &ui_state.username_len,
+        .ip => &ui_state.ip_len,
+        .port => &ui_state.port_len,
+        .saves_path => &ui_state.saves_len,
+        .preset_name => &ui_state.preset_name_len,
+        .none => null,
+    };
+}
+
+fn getActiveBuf() ?[]u8 {
+    return switch (ui_state.active_field) {
+        .username => &ui_state.username_buf,
+        .ip => &ui_state.ip_buf,
+        .port => &ui_state.port_buf,
+        .saves_path => &ui_state.saves_buf,
+        .preset_name => &ui_state.preset_name_buf,
+        .none => null,
+    };
 }
 
 /// Handle Enter/Return key — commit and unfocus
@@ -135,11 +191,16 @@ pub fn handleTab() void {
     ui_state.syncFromConfig();
 }
 
-fn appendToBuffer(buf: anytype, len: *usize, text: []const u8) void {
+fn insertAtCursor(buf: []u8, len: *usize, text: []const u8, max_len: usize) void {
     for (text) |ch| {
-        if (len.* < buf.len) {
-            buf[len.*] = ch;
+        if (len.* < @min(buf.len, max_len)) {
+            const move_len = len.* - ui_state.cursor_pos;
+            if (move_len > 0) {
+                std.mem.copyBackwards(u8, buf[ui_state.cursor_pos + 1 .. len.* + 1], buf[ui_state.cursor_pos..len.*]);
+            }
+            buf[ui_state.cursor_pos] = ch;
             len.* += 1;
+            ui_state.cursor_pos += 1;
         }
     }
 }
@@ -185,6 +246,9 @@ const COLOR_RED = rgba(0xDA, 0x3A, 0x3A, 0xFF);
 const COLOR_PROGRESS_TRACK = rgba(0x1A, 0x1A, 0x1A, 0xFF);
 
 const FONT_ID: u16 = 0;
+const FONT_SIZE_SMALL: u16 = 10;
+const FONT_SIZE_NORMAL: u16 = 12;
+const FONT_SIZE_HEADER: u16 = 16;
 
 // File-scope buffer for dynamic text that must persist until Clay renders
 var dl_progress_buf: [96]u8 = undefined;
@@ -220,9 +284,8 @@ var text_id_counter: u32 = 0;
 
 fn textElement(s: []const u8, font_size: u16, color: c.Clay_Color) void {
     text_id_counter +%= 1;
-    // We open a transparent block just to contain the text, with a unique ID based on pointer+counter
     c.Clay__OpenElementWithId(c.Clay__HashStringWithOffset(clayStr(s), text_id_counter, 0));
-    c.Clay__ConfigureOpenElement(.{ .layout = .{ .sizing = .{ .width = fixedW(0), .height = fixedH(0) } } });
+    c.Clay__ConfigureOpenElement(.{ .layout = .{ .sizing = .{ .width = fitWidth(), .height = fitHeight() } } });
 
     c.Clay__OpenTextElement(clayStr(s), c.Clay__StoreTextElementConfig(.{
         .fontId = FONT_ID,
@@ -230,7 +293,7 @@ fn textElement(s: []const u8, font_size: u16, color: c.Clay_Color) void {
         .textColor = color,
     }));
 
-    c.Clay__CloseElement(); // Close textElement container
+    closeElement(); // Close textElement container
 }
 
 fn imageElement(name: []const u8, texture: ?*c.SDL_Texture, width: f32, height: f32) void {
@@ -359,9 +422,9 @@ fn layoutHeader() void {
 
     // Game version
     if (ui_state.game_version_len > 0) {
-        textElement(ui_state.game_version_display[0..ui_state.game_version_len], 10, COLOR_MUTED);
+        textElement(ui_state.game_version_display[0..ui_state.game_version_len], FONT_SIZE_SMALL, COLOR_MUTED);
     } else {
-        textElement("Not installed", 10, COLOR_MUTED);
+        textElement("Not installed", FONT_SIZE_SMALL, COLOR_MUTED);
     }
 
     // Spacer
@@ -377,7 +440,7 @@ fn layoutHeader() void {
 }
 
 fn layoutPill(name: []const u8, text: []const u8, color: c.Clay_Color) void {
-    button(name, text, 10, color, fitWidth());
+    button(name, text, FONT_SIZE_SMALL, color, fitWidth());
 }
 
 fn gameStatusText() []const u8 {
@@ -475,7 +538,7 @@ fn layoutTab(label: []const u8, tab: Tab) void {
         } else std.mem.zeroes(c.Clay_BorderElementConfig),
     });
 
-    textElement(label, 12, if (is_active) COLOR_WHITE else COLOR_MUTED);
+    textElement(label, FONT_SIZE_NORMAL, if (is_active) COLOR_WHITE else COLOR_MUTED);
     closeElement();
 }
 
@@ -505,72 +568,94 @@ fn layoutContent() void {
 // ── Play Tab ───────────────────────────────────────────────────────────
 
 fn layoutPlayTab() void {
-    textElement("Server Presets", 16, COLOR_WHITE);
+    textElement("Profiles", FONT_SIZE_HEADER, COLOR_WHITE);
 
-    // Row 1
-    openElement("PR1");
-    c.Clay__ConfigureOpenElement(.{
-        .layout = .{
-            .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
-            .sizing = .{ .width = growWidth(), .height = growHeight() },
-            .childGap = 12,
-        },
-    });
-    layoutPresetCard(0);
-    layoutPresetCard(1);
-    closeElement();
-
-    // Row 2
-    openElement("PR2");
-    c.Clay__ConfigureOpenElement(.{
-        .layout = .{
-            .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
-            .sizing = .{ .width = growWidth(), .height = growHeight() },
-            .childGap = 12,
-        },
-    });
-    layoutPresetCard(2);
-    layoutPresetCard(3);
-    closeElement();
-}
-
-fn layoutPresetCard(index: u32) void {
-    const is_active = ui_state.config.active_preset == index;
-    const preset = ui_state.config.presets[index];
-
-    openElementI("Card", index);
+    // Scrollable container for presets
+    openElement("PrsCont");
     c.Clay__ConfigureOpenElement(.{
         .layout = .{
             .layoutDirection = c.CLAY_TOP_TO_BOTTOM,
-            .sizing = .{ .width = growWidth(), .height = growHeight() },
-            .padding = pad4(12, 12, 12, 12),
-            .childGap = 6,
+            .sizing = growSize(),
+            .childGap = 4,
+            .padding = pad4(0, 0, 8, 8),
+        },
+        .clip = .{ .vertical = true, .horizontal = false, .childOffset = c.Clay_GetScrollOffset() },
+    });
+
+    for (0..ui_state.config.presets.len) |i| {
+        layoutPresetRow(@intCast(i));
+    }
+
+    // Add Preset Button - standard text button
+    button("AddPrsBtn", "ADD PROFILE", FONT_SIZE_NORMAL, COLOR_GREEN, fitWidth());
+
+    closeElement(); // PrsCont
+}
+
+fn layoutPresetRow(index: u32) void {
+    const is_active = ui_state.config.active_preset == index;
+    const can_delete = is_active and ui_state.config.presets.len > 1;
+    const preset = ui_state.config.presets[index];
+
+    openElementI("Row", index);
+    c.Clay__ConfigureOpenElement(.{
+        .layout = .{
+            .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
+            .sizing = .{ .width = growWidth(), .height = fixedH(36) },
+            .padding = pad4(12, 0, 0, 0),
+            .childGap = 12,
+            .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
         },
         .backgroundColor = if (is_active) COLOR_CARD_ACTIVE else COLOR_CARD_BG,
         .cornerRadius = uniformCorner(4),
-        .border = .{
-            .color = if (is_active) COLOR_GREEN else COLOR_BORDER,
-            .width = uniformBorder(if (is_active) 2 else 1),
-        },
+        .border = if (is_active) .{
+            .color = COLOR_GREEN,
+            .width = .{ .left = 3, .right = 0, .top = 0, .bottom = 0, .betweenChildren = 0 },
+        } else std.mem.zeroes(c.Clay_BorderElementConfig),
     });
 
-    textElement(preset.name, 12, COLOR_WHITE);
+    textElement(preset.name, FONT_SIZE_NORMAL, COLOR_WHITE);
+
     if (preset.ip.len > 0) {
-        textElement(preset.ip, 10, COLOR_MUTED);
+        textElement(preset.ip, FONT_SIZE_SMALL, COLOR_MUTED);
     } else {
-        textElement("No server configured", 10, COLOR_MUTED);
+        textElement("Localhost", FONT_SIZE_SMALL, COLOR_MUTED);
     }
 
+    // Spacer
+    openElementI("RSp", index);
+    c.Clay__ConfigureOpenElement(.{ .layout = .{ .sizing = .{ .width = growWidth() } } });
     closeElement();
+
+    if (can_delete) {
+        openElementI("DelBtn", index);
+        c.Clay__ConfigureOpenElement(.{
+            .layout = .{
+                .sizing = .{ .width = fitWidth(), .height = fitHeight() },
+                .padding = .{ .left = 16, .right = 16, .top = 6, .bottom = 6 },
+                .childAlignment = .{ .x = c.CLAY_ALIGN_X_CENTER, .y = c.CLAY_ALIGN_Y_CENTER },
+            },
+            .backgroundColor = COLOR_RED,
+            .cornerRadius = uniformCorner(4),
+        });
+        c.Clay__OpenTextElement(clayStr("DELETE"), c.Clay__StoreTextElementConfig(.{
+            .fontSize = FONT_SIZE_SMALL,
+            .textColor = COLOR_WHITE,
+            .fontId = FONT_ID,
+        }));
+        closeElement();
+    }
+
+    closeElement(); // Row
 }
 
 // ── Versions Tab ───────────────────────────────────────────────────────
 
 fn layoutVersionsTab() void {
-    textElement("Installed Versions", 16, COLOR_WHITE);
+    textElement("Installed Versions", FONT_SIZE_HEADER, COLOR_WHITE);
 
     // Check for Updates button
-    button("ChkUpd", "Check for Updates", 12, COLOR_GREEN, fitWidth());
+    button("ChkUpd", "Check for Updates", FONT_SIZE_NORMAL, COLOR_GREEN, fitWidth());
 
     // Update available banner
     if (game_updater.game_update_status == .update_available) {
@@ -588,7 +673,7 @@ fn layoutVersionsTab() void {
             .border = .{ .color = COLOR_GREEN, .width = uniformBorder(1) },
         });
 
-        textElement("A new game version is available!", 12, COLOR_WHITE);
+        textElement("A new game version is available!", FONT_SIZE_NORMAL, COLOR_WHITE);
 
         // Spacer
         openElement("UBSp");
@@ -596,7 +681,7 @@ fn layoutVersionsTab() void {
         closeElement();
 
         // Download button
-        button("DlBtn", "Download Update", 11, COLOR_GREEN, fitWidth());
+        button("DlBtn", "Download Update", FONT_SIZE_SMALL, COLOR_GREEN, fitWidth());
 
         closeElement(); // UpdBnr
     }
@@ -613,7 +698,7 @@ fn layoutVersionsTab() void {
 
         // Status text
         if (progress.is_extracting) {
-            textElement("Extracting...", 10, COLOR_MUTED);
+            textElement("Extracting...", FONT_SIZE_SMALL, COLOR_MUTED);
         } else {
             const mb_received = @as(f64, @floatFromInt(progress.bytes_received)) / (1024.0 * 1024.0);
             if (progress.total_bytes > 0) {
@@ -625,7 +710,7 @@ fn layoutVersionsTab() void {
                 const result = std.fmt.bufPrint(&dl_progress_buf, "Downloading... {d:.1} MB", .{mb_received}) catch "Downloading...";
                 dl_progress_len = result.len;
             }
-            textElement(dl_progress_buf[0..dl_progress_len], 10, COLOR_MUTED);
+            textElement(dl_progress_buf[0..dl_progress_len], FONT_SIZE_SMALL, COLOR_MUTED);
         }
 
         // Track
@@ -651,7 +736,7 @@ fn layoutVersionsTab() void {
 
     // Done message
     if (game_updater.game_download_progress.done) {
-        textElement("Update installed successfully!", 12, COLOR_GREEN);
+        textElement("Update installed successfully!", FONT_SIZE_NORMAL, COLOR_GREEN);
     }
 
     // Version list
@@ -666,7 +751,7 @@ fn layoutVersionsTab() void {
         .clip = .{ .vertical = true, .horizontal = false, .childOffset = c.Clay_GetScrollOffset() },
     });
     if (game_updater.installed_version_count == 0) {
-        textElement("No versions installed", 12, COLOR_MUTED);
+        textElement("No versions installed", FONT_SIZE_NORMAL, COLOR_MUTED);
     } else {
         for (0..game_updater.installed_version_count) |i| {
             openElementI("Ver", @intCast(i));
@@ -679,7 +764,7 @@ fn layoutVersionsTab() void {
                 .backgroundColor = COLOR_CARD_BG,
                 .cornerRadius = uniformCorner(4),
             });
-            textElement(game_updater.getInstalledVersionName(i), 12, COLOR_WHITE);
+            textElement(game_updater.getInstalledVersionName(i), FONT_SIZE_NORMAL, COLOR_WHITE);
             closeElement();
         }
     }
@@ -689,49 +774,23 @@ fn layoutVersionsTab() void {
 // ── Settings Tab ───────────────────────────────────────────────────────
 
 fn layoutSettingsTab() void {
-    textElement("SAVES FOLDER", 10, COLOR_MUTED);
+    textElement("SAVES FOLDER", FONT_SIZE_SMALL, COLOR_MUTED);
 
     // Saves path row
     openElement("SvRow");
     c.Clay__ConfigureOpenElement(.{
         .layout = .{
-            .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
             .sizing = .{ .width = growWidth() },
             .childGap = 8,
             .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
         },
     });
 
-    const is_active = ui_state.active_field == .saves_path;
     // Path display
-    openElement("InputBase");
-    c.Clay__ConfigureOpenElement(.{
-        .layout = .{
-            .sizing = .{ .width = growWidth(), .height = fixedH(32) },
-            .padding = .{ .left = 12, .right = 12, .top = 0, .bottom = 0 },
-            .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
-        },
-        .backgroundColor = COLOR_INPUT_BG,
-        .cornerRadius = uniformCorner(4),
-        .border = .{ .color = if (is_active) COLOR_GREEN else COLOR_INPUT_BORDER, .width = uniformBorder(1) },
-    });
-
-    var text_to_render: []const u8 = "";
-    if (is_active) {
-        text_to_render = ui_state.saves_buf[0..ui_state.saves_len];
-    } else {
-        text_to_render = ui_state.config.saves_path;
-    }
-
-    if (text_to_render.len > 0) {
-        textElement(text_to_render, 12, COLOR_WHITE);
-    } else if (is_active) {
-        textElement("_", 12, COLOR_WHITE);
-    }
-    closeElement();
+    layoutInputField("Saves", "SavesPath", 400, .saves_path);
 
     // Change button
-    button("ChBtn", "Change", 10, COLOR_GREEN, fitWidth());
+    button("ChBtn", "Change", FONT_SIZE_SMALL, COLOR_GREEN, fitWidth());
 
     closeElement(); // SvRow
 
@@ -742,7 +801,7 @@ fn layoutSettingsTab() void {
 
     // Wine section (Linux only)
     if (comptime builtin.os.tag == .linux) {
-        textElement("WINE", 10, COLOR_MUTED);
+        textElement("WINE", FONT_SIZE_SMALL, COLOR_MUTED);
 
         openElement("WineR");
         c.Clay__ConfigureOpenElement(.{
@@ -755,13 +814,13 @@ fn layoutSettingsTab() void {
         });
 
         if (launcher_mod.wine_version) |wv| {
-            textElement(wv, 12, COLOR_WHITE);
+            textElement(wv, FONT_SIZE_NORMAL, COLOR_WHITE);
         } else {
-            textElement("Wine not found", 12, COLOR_RED);
+            textElement("Wine not found", FONT_SIZE_NORMAL, COLOR_RED);
         }
 
         // Reset Wine button
-        button("RstW", "Reset Wine Prefix", 10, COLOR_GREEN, fitWidth());
+        button("RstW", "Reset Wine Prefix", FONT_SIZE_SMALL, COLOR_GREEN, fitWidth());
 
         closeElement(); // WineR
 
@@ -771,7 +830,7 @@ fn layoutSettingsTab() void {
     }
 
     // Launcher section
-    textElement("LAUNCHER", 10, COLOR_MUTED);
+    textElement("LAUNCHER", FONT_SIZE_SMALL, COLOR_MUTED);
 
     openElement("LaunchR");
     c.Clay__ConfigureOpenElement(.{
@@ -783,10 +842,10 @@ fn layoutSettingsTab() void {
         },
     });
 
-    textElement(updater.getShortCommit(), 12, COLOR_WHITE);
+    textElement(updater.getShortCommit(), FONT_SIZE_NORMAL, COLOR_WHITE);
 
     // Check for updates button (launcher)
-    button("ChkLU", "Check for Update", 10, COLOR_GREEN, fitWidth());
+    button("ChkLU", "Check for Update", FONT_SIZE_SMALL, COLOR_GREEN, fitWidth());
 
     closeElement(); // LaunchR
 }
@@ -819,10 +878,10 @@ fn layoutBottomBar() void {
     closeElement();
 
     // Input fields
-    layoutInputField("Profile", 120, .preset_name);
-    layoutInputField("Username", 140, .username);
-    layoutInputField("IP", 140, .ip);
-    layoutInputField("Port", 80, .port);
+    layoutInputField("Profile", "Profile", 120, .preset_name);
+    layoutInputField("Username", "Username", 140, .username);
+    layoutInputField("IP", "IP", 140, .ip);
+    layoutInputField("Port", "Port", 80, .port);
 
     // Spacer
     openElement("BSp1");
@@ -851,18 +910,18 @@ fn layoutBottomBar() void {
     });
 
     // Singleplayer Button
-    button("Singleplayer", "START SINGLEPLAYER", 12, launch_bg, growWidth());
+    button("Singleplayer", "START SINGLEPLAYER", FONT_SIZE_NORMAL, launch_bg, growWidth());
 
     // Multiplayer Button
-    button("Multiplayer", "START MULTIPLAYER", 12, launch_bg, growWidth());
+    button("Multiplayer", "START MULTIPLAYER", FONT_SIZE_NORMAL, launch_bg, growWidth());
 
     closeElement(); // LaunchContainer
 
     closeElement(); // BBar
 }
 
-fn layoutInputField(label: []const u8, width: f32, field: ActiveField) void {
-    openElement(label);
+fn layoutInputField(label: []const u8, comp_id: []const u8, width: f32, field: ActiveField) void {
+    openElement(comp_id);
     c.Clay__ConfigureOpenElement(.{
         .layout = .{
             .layoutDirection = c.CLAY_TOP_TO_BOTTOM,
@@ -871,15 +930,15 @@ fn layoutInputField(label: []const u8, width: f32, field: ActiveField) void {
         },
     });
 
-    textElement(label, 10, COLOR_MUTED);
+    textElement(label, FONT_SIZE_SMALL, COLOR_MUTED);
 
     const is_active = ui_state.active_field == field;
     const border_color = if (is_active) COLOR_GREEN else COLOR_INPUT_BORDER;
 
-    var inp_id_buf: [64]u8 = undefined;
-    const inp_id = std.fmt.bufPrint(&inp_id_buf, "Inp_{s}", .{label}) catch "Inp_";
+    const base_id = clayStr(comp_id);
+    const inp_id = c.Clay__HashStringWithOffset(base_id, 1, 0);
 
-    c.Clay__OpenElementWithId(clayId(inp_id));
+    c.Clay__OpenElementWithId(inp_id);
     c.Clay__ConfigureOpenElement(.{
         .layout = .{
             .sizing = .{ .width = growWidth(), .height = fixedH(28) },
@@ -887,7 +946,17 @@ fn layoutInputField(label: []const u8, width: f32, field: ActiveField) void {
             .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
         },
         .backgroundColor = COLOR_INPUT_BG,
-        .border = .{ .color = border_color, .width = uniformBorder(1) },
+        .border = .{ .color = border_color, .width = uniformBorder(if (is_active) 2 else 1) },
+    });
+
+    const x_offset = -ui_state.scroll_offsets[@intFromEnum(field)];
+
+    // Clipping container
+    const clip_id = c.Clay__HashStringWithOffset(base_id, 2, 0);
+    c.Clay__OpenElementWithId(clip_id);
+    c.Clay__ConfigureOpenElement(.{
+        .layout = .{ .sizing = .{ .width = fixedW(width - 12), .height = fixedH(20) } },
+        .clip = .{ .horizontal = true, .vertical = false, .childOffset = .{ .x = x_offset, .y = 0 } },
     });
 
     // Render text
@@ -913,16 +982,64 @@ fn layoutInputField(label: []const u8, width: f32, field: ActiveField) void {
         };
     }
 
-    // Check if it's empty, possibly display a cursor if active
-    if (text_to_render.len > 0) {
-        textElement(text_to_render, 12, COLOR_WHITE);
-    } else if (is_active) {
-        textElement("_", 12, COLOR_WHITE);
+    const field_idx = @intFromEnum(field);
+    if (is_active) {
+        const cursor_x = renderer_mod.measureTextWidth(ui_state.font, text_to_render[0..@min(ui_state.cursor_pos, text_to_render.len)], FONT_SIZE_NORMAL);
+
+        // Simple scrolling: keep cursor in view
+        const box_width: f32 = width - 12; // approximate visible area
+        if (cursor_x - ui_state.scroll_offsets[field_idx] > box_width - 20) {
+            ui_state.scroll_offsets[field_idx] = cursor_x - (box_width - 20);
+        } else if (cursor_x < ui_state.scroll_offsets[field_idx]) {
+            ui_state.scroll_offsets[field_idx] = cursor_x;
+        }
+    } else {
+        ui_state.scroll_offsets[field_idx] = 0;
     }
 
-    closeElement(); // Inp
+    const before = text_to_render[0..@min(ui_state.cursor_pos, text_to_render.len)];
+    const after = text_to_render[@min(ui_state.cursor_pos, text_to_render.len)..];
 
-    closeElement();
+    const text_row_id = c.Clay__HashStringWithOffset(base_id, 3, 0);
+    c.Clay__OpenElementWithId(text_row_id);
+    c.Clay__ConfigureOpenElement(.{
+        .layout = .{
+            .layoutDirection = c.CLAY_LEFT_TO_RIGHT,
+            .sizing = .{ .width = fitWidth() },
+            .childAlignment = .{ .y = c.CLAY_ALIGN_Y_CENTER },
+        },
+    });
+
+    if (before.len > 0) {
+        textElement(before, FONT_SIZE_NORMAL, COLOR_WHITE);
+    }
+
+    // Cursor (or spacer if blinking off)
+    if (is_active) {
+        const show_cursor = (c.SDL_GetTicks() % 1000 < 500);
+        const cursor_id = c.Clay__HashStringWithOffset(base_id, 4, 0);
+        c.Clay__OpenElementWithId(cursor_id);
+        c.Clay__ConfigureOpenElement(.{
+            .layout = .{
+                .sizing = .{ .width = fixedW(2), .height = fixedH(16) },
+            },
+            .backgroundColor = if (show_cursor) COLOR_WHITE else std.mem.zeroes(c.Clay_Color),
+        });
+        closeElement();
+    }
+
+    if (after.len > 0) {
+        textElement(after, FONT_SIZE_NORMAL, COLOR_WHITE);
+    }
+
+    if (text_to_render.len == 0 and !is_active) {
+        textElement("_", FONT_SIZE_NORMAL, COLOR_MUTED);
+    }
+
+    closeElement(); // TextRow
+    closeElement(); // Clip
+    closeElement(); // Inp_...
+    closeElement(); // label
 }
 
 // ── Click Handling ─────────────────────────────────────────────────────
@@ -956,57 +1073,93 @@ pub fn handleClick() void {
         launcher_mod.launch(std.heap.page_allocator, ui_state.config, true) catch |err| {
             std.debug.print("Failed to launch multiplayer: {}\n", .{err});
         };
-    } else if (c.Clay_PointerOver(clayId("ChkUpd"))) {
-        game_updater.checkForGameUpdate(std.heap.page_allocator) catch |err| {
-            std.debug.print("Failed to check game update: {}\n", .{err});
-        };
-    } else if (c.Clay_PointerOver(clayId("DlBtn"))) {
-        // Don't start another download if already downloading
-        if (game_updater.game_update_status != .downloading) {
-            const thread = std.Thread.spawn(.{}, struct {
-                fn run() void {
-                    game_updater.downloadGame(std.heap.page_allocator) catch |err| {
-                        std.debug.print("Failed to download game: {}\n", .{err});
-                        game_updater.game_update_status = .err;
-                    };
-                }
-            }.run, .{}) catch |err| {
-                std.debug.print("Failed to spawn download thread: {}\n", .{err});
-                return;
-            };
-            thread.detach();
-        }
-    } else if (c.Clay_PointerOver(clayId("ChkLU"))) {
-        updater.checkForLauncherUpdate(std.heap.page_allocator) catch |err| {
-            std.debug.print("Failed to check launcher update: {}\n", .{err});
-        };
-    } else if (c.Clay_PointerOver(clayId("ChBtn"))) {
-        std.debug.print("TODO: Implement file picker for saves path\n", .{});
-    } else if (c.Clay_PointerOver(clayId("Inp_Username"))) {
-        commitActiveField();
-        ui_state.config.active_preset = ui_state.config.active_preset; // force save logic placeholder just in case
-        ui_state.active_field = .username;
-        ui_state.syncFromConfig();
-    } else if (c.Clay_PointerOver(clayId("Inp_IP"))) {
-        commitActiveField();
-        ui_state.active_field = .ip;
-        ui_state.syncFromConfig();
-    } else if (c.Clay_PointerOver(clayId("Inp_Port"))) {
-        commitActiveField();
-        ui_state.active_field = .port;
-        ui_state.syncFromConfig();
-    } else if (c.Clay_PointerOver(clayId("Inp_SavesPath"))) {
-        commitActiveField();
-        ui_state.active_field = .saves_path;
-        ui_state.syncFromConfig();
-    } else if (c.Clay_PointerOver(clayId("Inp_Profile"))) {
-        commitActiveField();
-        ui_state.active_field = .preset_name;
-        ui_state.syncFromConfig();
-    } else {
-        // Clicked somewhere else, unfocus
+    } else if (c.Clay_PointerOver(clayId("AddPrsBtn"))) {
         commitActiveField();
         ui_state.active_field = .none;
+        addPreset() catch |err| {
+            std.debug.print("Failed to add preset: {}\n", .{err});
+        };
+    } else {
+        // Check dynamic rows
+        var row_clicked = false;
+        for (0..ui_state.config.presets.len) |i| {
+            if (c.Clay_PointerOver(clayIdI("DelBtn", @intCast(i)))) {
+                commitActiveField();
+                ui_state.active_field = .none;
+                deletePreset(@intCast(i)) catch |err| {
+                    std.debug.print("Failed to delete preset: {}\n", .{err});
+                };
+                row_clicked = true;
+                break;
+            }
+            if (c.Clay_PointerOver(clayIdI("Row", @intCast(i)))) {
+                commitActiveField();
+                ui_state.active_field = .none;
+                ui_state.config.active_preset = @intCast(i);
+                ui_state.syncFromConfig();
+                row_clicked = true;
+                break;
+            }
+        }
+
+        if (!row_clicked) {
+            if (c.Clay_PointerOver(clayId("ChkUpd"))) {
+                game_updater.checkForGameUpdate(std.heap.page_allocator) catch |err| {
+                    std.debug.print("Failed to check game update: {}\n", .{err});
+                };
+            } else if (c.Clay_PointerOver(clayId("DlBtn"))) {
+                // Don't start another download if already downloading
+                if (game_updater.game_update_status != .downloading) {
+                    const thread = std.Thread.spawn(.{}, struct {
+                        fn run() void {
+                            game_updater.downloadGame(std.heap.page_allocator) catch |err| {
+                                std.debug.print("Failed to download game: {}\n", .{err});
+                                game_updater.game_update_status = .err;
+                            };
+                        }
+                    }.run, .{}) catch |err| {
+                        std.debug.print("Failed to spawn download thread: {}\n", .{err});
+                        return;
+                    };
+                    thread.detach();
+                }
+            } else if (c.Clay_PointerOver(clayId("ChkLU"))) {
+                updater.checkForLauncherUpdate(std.heap.page_allocator) catch |err| {
+                    std.debug.print("Failed to check launcher update: {}\n", .{err});
+                };
+            } else if (c.Clay_PointerOver(clayId("ChBtn"))) {
+                std.debug.print("TODO: Implement file picker for saves path\n", .{});
+            } else if (c.Clay_PointerOver(c.Clay__HashStringWithOffset(clayStr("Username"), 1, 0))) {
+                commitActiveField();
+                ui_state.active_field = .username;
+                ui_state.syncFromConfig();
+                ui_state.cursor_pos = ui_state.username_len;
+            } else if (c.Clay_PointerOver(c.Clay__HashStringWithOffset(clayStr("IP"), 1, 0))) {
+                commitActiveField();
+                ui_state.active_field = .ip;
+                ui_state.syncFromConfig();
+                ui_state.cursor_pos = ui_state.ip_len;
+            } else if (c.Clay_PointerOver(c.Clay__HashStringWithOffset(clayStr("Port"), 1, 0))) {
+                commitActiveField();
+                ui_state.active_field = .port;
+                ui_state.syncFromConfig();
+                ui_state.cursor_pos = ui_state.port_len;
+            } else if (c.Clay_PointerOver(c.Clay__HashStringWithOffset(clayStr("SavesPath"), 1, 0))) {
+                commitActiveField();
+                ui_state.active_field = .saves_path;
+                ui_state.syncFromConfig();
+                ui_state.cursor_pos = ui_state.saves_len;
+            } else if (c.Clay_PointerOver(c.Clay__HashStringWithOffset(clayStr("Profile"), 1, 0))) {
+                commitActiveField();
+                ui_state.active_field = .preset_name;
+                ui_state.syncFromConfig();
+                ui_state.cursor_pos = ui_state.preset_name_len;
+            } else {
+                // Clicked somewhere else, unfocus
+                commitActiveField();
+                ui_state.active_field = .none;
+            }
+        }
     }
 
     if (comptime builtin.os.tag == .linux) {
@@ -1016,4 +1169,48 @@ pub fn handleClick() void {
             };
         }
     }
+}
+
+fn addPreset() !void {
+    const old_presets = ui_state.config.presets;
+    const new_presets = try ui_state.allocator.alloc(config_mod.Preset, old_presets.len + 1);
+
+    for (old_presets, 0..) |p, i| {
+        new_presets[i] = p;
+    }
+
+    // New default preset
+    var name_buf: [32]u8 = undefined;
+    const p_name = try std.fmt.bufPrint(&name_buf, "New Profile {d}", .{new_presets.len});
+    new_presets[old_presets.len] = .{
+        .name = try ui_state.allocator.dupe(u8, p_name),
+        .port = "25565",
+    };
+
+    ui_state.config.presets = new_presets;
+    ui_state.config.active_preset = @intCast(old_presets.len);
+    ui_state.syncFromConfig();
+}
+
+fn deletePreset(index: u32) !void {
+    const old_presets = ui_state.config.presets;
+    if (old_presets.len <= 1) return;
+
+    const new_presets = try ui_state.allocator.alloc(config_mod.Preset, old_presets.len - 1);
+
+    var new_i: usize = 0;
+    for (old_presets, 0..) |p, i| {
+        if (i == index) continue;
+        new_presets[new_i] = p;
+        new_i += 1;
+    }
+
+    ui_state.config.presets = new_presets;
+
+    // Adjust active_preset
+    if (ui_state.config.active_preset >= new_presets.len) {
+        ui_state.config.active_preset = @intCast(new_presets.len - 1);
+    }
+
+    ui_state.syncFromConfig();
 }

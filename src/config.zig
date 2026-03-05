@@ -11,12 +11,7 @@ pub const Preset = struct {
 pub const Config = struct {
     saves_path: []const u8 = "",
     active_preset: u32 = 0,
-    presets: [4]Preset = .{
-        .{ .name = "Default", .port = "25565" },
-        .{ .name = "Preset 2", .port = "25565" },
-        .{ .name = "Preset 3", .port = "25565" },
-        .{ .name = "Preset 4", .port = "25565" },
-    },
+    presets: []Preset = &[_]Preset{},
 };
 
 const safe_fs = @import("safe_fs.zig");
@@ -33,6 +28,11 @@ pub fn loadConfig(allocator: std.mem.Allocator) !Config {
             var cfg = Config{};
             const saves = try safe_fs.getSavesDir(allocator);
             cfg.saves_path = saves;
+
+            // Initial default preset
+            const default_presets = try allocator.alloc(Preset, 1);
+            default_presets[0] = .{ .name = "Default", .port = "25565" };
+            cfg.presets = default_presets;
             return cfg;
         },
         else => return err,
@@ -48,6 +48,9 @@ pub fn loadConfig(allocator: std.mem.Allocator) !Config {
         // If JSON is invalid, return defaults
         const saves = try safe_fs.getSavesDir(allocator);
         config.saves_path = saves;
+        const default_presets = try allocator.alloc(Preset, 1);
+        default_presets[0] = .{ .name = "Default", .port = "25565" };
+        config.presets = default_presets;
         return config;
     };
     defer parsed.deinit();
@@ -61,16 +64,15 @@ pub fn loadConfig(allocator: std.mem.Allocator) !Config {
         }
         if (root.object.get("active_preset")) |ap| {
             if (ap == .integer) {
-                const val = ap.integer;
-                if (val >= 0 and val < 4) {
-                    config.active_preset = @intCast(@as(u32, @truncate(@as(u64, @bitCast(val)))));
-                }
+                config.active_preset = @intCast(@as(u32, @truncate(@as(u64, @bitCast(ap.integer)))));
             }
         }
         if (root.object.get("presets")) |presets_val| {
             if (presets_val == .array) {
+                const count = presets_val.array.items.len;
+                config.presets = try allocator.alloc(Preset, count);
                 for (presets_val.array.items, 0..) |item, i| {
-                    if (i >= 4) break;
+                    config.presets[i] = .{}; // Initialize with defaults
                     if (item == .object) {
                         if (item.object.get("name")) |n| {
                             if (n == .string) config.presets[i].name = try allocator.dupe(u8, n.string);
@@ -93,6 +95,13 @@ pub fn loadConfig(allocator: std.mem.Allocator) !Config {
     // Default saves_path if not set
     if (config.saves_path.len == 0) {
         config.saves_path = try safe_fs.getSavesDir(allocator);
+    }
+
+    // Ensure at least one preset exists
+    if (config.presets.len == 0) {
+        const default_presets = try allocator.alloc(Preset, 1);
+        default_presets[0] = .{ .name = "Default", .port = "25565" };
+        config.presets = default_presets;
     }
 
     return config;
@@ -122,7 +131,7 @@ pub fn saveConfig(allocator: std.mem.Allocator, config: *const Config) !void {
         try writer.print("\"ip\": \"{s}\", ", .{preset.ip});
         try writer.print("\"port\": \"{s}\"", .{preset.port});
         try writer.writeAll(" }");
-        if (i < 3) try writer.writeAll(",");
+        if (i < config.presets.len - 1) try writer.writeAll(",");
         try writer.writeAll("\n");
     }
     try writer.writeAll("  ]\n");

@@ -1,6 +1,7 @@
 # Flint
 
 A "cross-platform" desktop launcher for Minecraft Legacy Console Edition.
+Logo provided by Pika <3
 
 ## Quickstart
 

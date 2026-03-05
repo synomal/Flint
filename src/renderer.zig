@@ -97,6 +97,15 @@ fn loadTextureFromMemory(renderer: *c.SDL_Renderer, data: []const u8) ?*c.SDL_Te
     return c.SDL_CreateTextureFromSurface(renderer, surf);
 }
 
+pub fn measureTextWidth(font: ?*c.TTF_Font, text: []const u8, fontSize: u16) f32 {
+    if (font == null or text.len == 0) return 0;
+    _ = c.TTF_SetFontSize(font.?, @floatFromInt(fontSize));
+    var width: c_int = 0;
+    // SDL3_ttf: TTF_GetStringSize takes a null-terminated string or a length
+    _ = c.TTF_GetStringSize(font.?, text.ptr, @intCast(text.len), &width, null);
+    return @floatFromInt(width);
+}
+
 /// Clay text-measurement callback (C calling-convention)
 /// user_data is the TTF_Font pointer passed via Clay_SetMeasureTextFunction
 pub fn measureText(
