@@ -1,0 +1,22 @@
+.{
+    .name = .Flint,
+    .version = "1.0.0",
+    .fingerprint = 0x8b7111ec7a270fae,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .SDL = .{
+            .url = "git+https://github.com/castholm/SDL?ref=v0.3.3+3.2.28#2cde21ea89c7b67d6e16f7f1e2faaa6f44618ecb",
+            .hash = "sdl-0.3.3+3.2.28-7uIn9MiRfwFhqxnwBi_vCQlKr82YpwkQBVwdz2uy46S1",
+        },
+        .SDL_ttf = .{
+            .url = "git+https://github.com/allyourcodebase/SDL_ttf#main",
+            .hash = "SDL_ttf-3.2.2-PNW5xNIRAADcUkA75pWizqojQE4hM75QjOequyw4aET6",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "vendor",
+    },
+}

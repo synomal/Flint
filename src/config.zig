@@ -1,0 +1,138 @@
+const std = @import("std");
+
+/// Launcher configuration loaded from and saved to config.json
+pub const Preset = struct {
+    name: []const u8 = "",
+    username: []const u8 = "",
+    ip: []const u8 = "",
+    port: []const u8 = "25565",
+};
+
+pub const Config = struct {
+    saves_path: []const u8 = "",
+    active_preset: u32 = 0,
+    presets: [4]Preset = .{
+        .{ .name = "Default", .port = "25565" },
+        .{ .name = "Preset 2", .port = "25565" },
+        .{ .name = "Preset 3", .port = "25565" },
+        .{ .name = "Preset 4", .port = "25565" },
+    },
+};
+
+const safe_fs = @import("safe_fs.zig");
+
+/// Load config from ~/.lcelauncher/config.json, returns defaults if missing
+pub fn loadConfig(allocator: std.mem.Allocator) !Config {
+    const base = try safe_fs.getBaseDir(allocator);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const config_path = try std.fmt.bufPrint(&path_buf, "{s}config.json", .{base});
+
+    const file = std.fs.openFileAbsolute(config_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            // Return defaults with saves path set
+            var cfg = Config{};
+            const saves = try safe_fs.getSavesDir(allocator);
+            cfg.saves_path = saves;
+            return cfg;
+        },
+        else => return err,
+    };
+    defer file.close();
+
+    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(content);
+
+    var config = Config{};
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch {
+        // If JSON is invalid, return defaults
+        const saves = try safe_fs.getSavesDir(allocator);
+        config.saves_path = saves;
+        return config;
+    };
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    if (root == .object) {
+        if (root.object.get("saves_path")) |sp| {
+            if (sp == .string) {
+                config.saves_path = try allocator.dupe(u8, sp.string);
+            }
+        }
+        if (root.object.get("active_preset")) |ap| {
+            if (ap == .integer) {
+                const val = ap.integer;
+                if (val >= 0 and val < 4) {
+                    config.active_preset = @intCast(@as(u32, @truncate(@as(u64, @bitCast(val)))));
+                }
+            }
+        }
+        if (root.object.get("presets")) |presets_val| {
+            if (presets_val == .array) {
+                for (presets_val.array.items, 0..) |item, i| {
+                    if (i >= 4) break;
+                    if (item == .object) {
+                        if (item.object.get("name")) |n| {
+                            if (n == .string) config.presets[i].name = try allocator.dupe(u8, n.string);
+                        }
+                        if (item.object.get("username")) |u| {
+                            if (u == .string) config.presets[i].username = try allocator.dupe(u8, u.string);
+                        }
+                        if (item.object.get("ip")) |ip| {
+                            if (ip == .string) config.presets[i].ip = try allocator.dupe(u8, ip.string);
+                        }
+                        if (item.object.get("port")) |p| {
+                            if (p == .string) config.presets[i].port = try allocator.dupe(u8, p.string);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Default saves_path if not set
+    if (config.saves_path.len == 0) {
+        config.saves_path = try safe_fs.getSavesDir(allocator);
+    }
+
+    return config;
+}
+
+/// Atomic save: write to config.json.tmp then rename to config.json
+pub fn saveConfig(allocator: std.mem.Allocator, config: *const Config) !void {
+    const base = try safe_fs.getBaseDir(allocator);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try std.fmt.bufPrint(&path_buf, "{s}config.json.tmp", .{base});
+    var final_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const final_path = try std.fmt.bufPrint(&final_buf, "{s}config.json", .{base});
+
+    // Build JSON string manually for control over format
+    var json_buf = std.ArrayList(u8).empty;
+    defer json_buf.deinit(allocator);
+    const writer = json_buf.writer(allocator);
+
+    try writer.writeAll("{\n");
+    try writer.print("  \"saves_path\": \"{s}\",\n", .{config.saves_path});
+    try writer.print("  \"active_preset\": {d},\n", .{config.active_preset});
+    try writer.writeAll("  \"presets\": [\n");
+    for (config.presets, 0..) |preset, i| {
+        try writer.writeAll("    { ");
+        try writer.print("\"name\": \"{s}\", ", .{preset.name});
+        try writer.print("\"username\": \"{s}\", ", .{preset.username});
+        try writer.print("\"ip\": \"{s}\", ", .{preset.ip});
+        try writer.print("\"port\": \"{s}\"", .{preset.port});
+        try writer.writeAll(" }");
+        if (i < 3) try writer.writeAll(",");
+        try writer.writeAll("\n");
+    }
+    try writer.writeAll("  ]\n");
+    try writer.writeAll("}\n");
+
+    // Write to tmp file
+    const tmp_file = try std.fs.createFileAbsolute(tmp_path, .{});
+    defer tmp_file.close();
+    try tmp_file.writeAll(json_buf.items);
+
+    // Atomic rename
+    try std.fs.renameAbsolute(tmp_path, final_path);
+}
