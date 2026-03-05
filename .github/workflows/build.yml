@@ -22,9 +22,9 @@ jobs:
           fetch-depth: 0 # Full history so 'git rev-parse HEAD' gets the correct commit
 
       - name: Setup Zig
-        uses: goto-bus-stop/setup-zig@v2
+        uses: mlugg/setup-zig@v1
         with:
-          version: master
+          version: 0.15.2
 
       - name: Build Linux
         run: zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe
