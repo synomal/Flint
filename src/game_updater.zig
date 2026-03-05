@@ -73,7 +73,7 @@ pub fn refreshInstalledVersions(allocator: std.mem.Allocator) void {
 const GAME_API_URL = "https://api.github.com/repos/smartcmd/MinecraftConsoles/releases/tags/nightly";
 const GAME_FALLBACK_URL = "https://github.com/smartcmd/MinecraftConsoles/releases/download/nightly/LCEWindows64.zip";
 
-/// Read the currently installed game commit SHA
+/// Read the currently installed game version (stored as published_at timestamp)
 pub fn readGameVersion(allocator: std.mem.Allocator) !?[]const u8 {
     const base = try safe_fs.getBaseDir(allocator);
     var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -89,7 +89,7 @@ pub fn readGameVersion(allocator: std.mem.Allocator) !?[]const u8 {
     return std.mem.trimRight(u8, content, "\n\r ");
 }
 
-/// Write the game version SHA
+/// Write the game version (published_at timestamp)
 pub fn writeGameVersion(allocator: std.mem.Allocator, sha: []const u8) !void {
     const base = try safe_fs.getBaseDir(allocator);
     var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -176,21 +176,22 @@ pub fn checkForGameUpdate(allocator: std.mem.Allocator) !void {
         return;
     }
 
-    // Get target_commitish
-    const commitish = root.object.get("target_commitish") orelse {
+    // Use published_at timestamp as the version identifier instead of target_commitish,
+    // because the nightly tag is force-pushed and target_commitish never changes.
+    const published_at = root.object.get("published_at") orelse {
         game_update_status = .err;
         return;
     };
-    if (commitish != .string) {
+    if (published_at != .string) {
         game_update_status = .err;
         return;
     }
 
-    available_game_sha = try allocator.dupe(u8, commitish.string);
+    available_game_sha = try allocator.dupe(u8, published_at.string);
 
     // Compare
     if (current_sha) |cs| {
-        if (std.mem.eql(u8, cs, commitish.string)) {
+        if (std.mem.eql(u8, cs, published_at.string)) {
             game_update_status = .up_to_date;
         } else {
             game_update_status = .update_available;
@@ -301,7 +302,20 @@ pub fn downloadGame(allocator: std.mem.Allocator) !void {
     game_download_progress = .{ .is_downloading = true };
 
     const sha = available_game_sha orelse return;
-    const sha_short = if (sha.len >= 7) sha[0..7] else sha;
+
+    // Sanitize published_at (e.g. "2024-01-15T10:30:00Z") into a safe dir name
+    // by replacing colons and other unsafe chars with dashes.
+    var version_slug_buf: [64]u8 = undefined;
+    var slug_len: usize = 0;
+    for (sha) |c| {
+        if (slug_len >= version_slug_buf.len - 1) break;
+        version_slug_buf[slug_len] = switch (c) {
+            ':', 'T', 'Z', ' ' => '-',
+            else => c,
+        };
+        slug_len += 1;
+    }
+    const version_slug = version_slug_buf[0..slug_len];
 
     // Paths
     const base = try safe_fs.getBaseDir(allocator);
@@ -366,7 +380,7 @@ pub fn downloadGame(allocator: std.mem.Allocator) !void {
     std.debug.print("Download complete ({} bytes), extracting...\n", .{bytes_written});
 
     var target_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const target_dir = std.fmt.bufPrint(&target_buf, "{s}nightly-{s}/", .{ versions, sha_short }) catch return error.OutOfMemory;
+    const target_dir = std.fmt.bufPrint(&target_buf, "{s}nightly-{s}/", .{ versions, version_slug }) catch return error.OutOfMemory;
     safe_fs.ensureDir(target_dir) catch |err| {
         std.debug.print("Failed to create target dir: {}\n", .{err});
         return err;
@@ -503,12 +517,12 @@ fn cleanOldVersions(allocator: std.mem.Allocator) !void {
     }
 }
 
-/// Get the short SHA for display (first 7 chars)
+/// Get the short version string for display (first 10 chars of published_at, e.g. "2024-01-15")
 pub fn getGameVersionShort(allocator: std.mem.Allocator) !?[]const u8 {
     const sha = try readGameVersion(allocator);
     if (sha) |s| {
-        if (s.len >= 7) {
-            return try allocator.dupe(u8, s[0..7]);
+        if (s.len >= 10) {
+            return try allocator.dupe(u8, s[0..10]);
         }
         return s;
     }
