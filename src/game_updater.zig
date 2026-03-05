@@ -386,8 +386,7 @@ pub fn downloadGame(allocator: std.mem.Allocator) !void {
     var l_child = std.process.Child.init(&.{ "unzip", "-l", zip_path }, allocator);
     l_child.stdout_behavior = .Pipe;
     l_child.stderr_behavior = .Ignore;
-    l_child.spawn() catch {};
-    if (l_child.id != 0) {
+    if (l_child.spawn()) |_| {
         if (l_child.stdout) |out| {
             const contents = out.readToEndAlloc(allocator, 10 * 1024 * 1024) catch "";
             defer if (contents.len > 0) allocator.free(contents);
