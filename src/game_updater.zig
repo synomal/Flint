@@ -102,6 +102,7 @@ pub fn writeGameVersion(allocator: std.mem.Allocator, sha: []const u8) !void {
 
 /// Check for game updates via GitHub API
 pub fn checkForGameUpdate(allocator: std.mem.Allocator) !void {
+    std.log.info("Checking for game updates...", .{});
     game_update_status = .checking;
 
     // Read current installed version
@@ -378,7 +379,39 @@ pub fn downloadGame(allocator: std.mem.Allocator) !void {
 
     // Extract
     game_download_progress.is_extracting = true;
-    std.debug.print("Download complete ({} bytes), extracting...\n", .{bytes_written});
+    game_download_progress.bytes_received = 0;
+    game_download_progress.total_bytes = 0;
+
+    // Run unzip -l to find total uncompressed bytes
+    var l_child = std.process.Child.init(&.{ "unzip", "-l", zip_path }, allocator);
+    l_child.stdout_behavior = .Pipe;
+    l_child.stderr_behavior = .Ignore;
+    l_child.spawn() catch {};
+    if (l_child.id != 0) {
+        if (l_child.stdout) |out| {
+            const contents = out.readToEndAlloc(allocator, 10 * 1024 * 1024) catch "";
+            defer if (contents.len > 0) allocator.free(contents);
+            var lines = std.mem.splitBackwardsScalar(u8, contents, '\n');
+            var total_bytes: u64 = 0;
+            while (lines.next()) |line| {
+                const tr_line = std.mem.trim(u8, line, " \r\t");
+                if (tr_line.len == 0) continue;
+                var words = std.mem.tokenizeAny(u8, tr_line, " \t");
+                if (words.next()) |first_word| {
+                    if (std.fmt.parseInt(u64, first_word, 10)) |val| {
+                        total_bytes = val;
+                        break;
+                    } else |_| {}
+                }
+            }
+            if (total_bytes > 0) {
+                game_download_progress.total_bytes = total_bytes;
+            }
+        }
+        _ = l_child.wait() catch {};
+    }
+
+    std.debug.print("Download complete ({} bytes), extracting. Total uncompressed size: {}\n", .{ bytes_written, game_download_progress.total_bytes });
 
     var target_buf: [std.fs.max_path_bytes]u8 = undefined;
     const target_dir = std.fmt.bufPrint(&target_buf, "{s}nightly-{s}/", .{ versions, version_slug }) catch return error.OutOfMemory;
@@ -386,6 +419,43 @@ pub fn downloadGame(allocator: std.mem.Allocator) !void {
         std.debug.print("Failed to create target dir: {}\n", .{err});
         return err;
     };
+
+    const Extractor = struct {
+        done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        target_dir: []const u8,
+        allocator: std.mem.Allocator,
+
+        fn getDirSize(dir_path: []const u8, alloc: std.mem.Allocator) u64 {
+            var size: u64 = 0;
+            var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return 0;
+            defer dir.close();
+            var w = dir.walk(alloc) catch return 0;
+            defer w.deinit();
+            while (w.next() catch null) |entry| {
+                if (entry.kind == .file) {
+                    if (dir.statFile(entry.path)) |st| {
+                        size += st.size;
+                    } else |_| {}
+                }
+            }
+            return size;
+        }
+
+        fn pollThread(self: *@This()) void {
+            while (!self.done.load(.acquire)) {
+                std.Thread.sleep(100 * std.time.ns_per_ms);
+                game_download_progress.bytes_received = getDirSize(self.target_dir, self.allocator);
+            }
+            game_download_progress.bytes_received = getDirSize(self.target_dir, self.allocator);
+        }
+    };
+
+    var ext_state = Extractor{
+        .target_dir = target_dir,
+        .allocator = allocator,
+    };
+
+    const poll_thread = std.Thread.spawn(.{}, Extractor.pollThread, .{&ext_state}) catch null;
 
     // Use system unzip for extraction
     var child = std.process.Child.init(
@@ -396,12 +466,30 @@ pub fn downloadGame(allocator: std.mem.Allocator) !void {
     child.stderr_behavior = .Ignore;
     child.spawn() catch |err| {
         std.debug.print("Failed to spawn unzip: {}\n", .{err});
+        if (poll_thread) |t| {
+            ext_state.done.store(true, .release);
+            t.join();
+        }
         return err;
     };
     _ = child.wait() catch |err| {
         std.debug.print("unzip wait failed: {}\n", .{err});
+        if (poll_thread) |t| {
+            ext_state.done.store(true, .release);
+            t.join();
+        }
         return err;
     };
+
+    if (poll_thread) |t| {
+        ext_state.done.store(true, .release);
+        t.join();
+    }
+
+    if (game_download_progress.total_bytes > 0) {
+        game_download_progress.bytes_received = game_download_progress.total_bytes;
+    }
+
     std.debug.print("Extraction complete\n", .{});
 
     // Check for single wrapper directory and strip it

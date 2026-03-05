@@ -697,21 +697,18 @@ fn layoutVersionsTab() void {
         };
 
         // Status text
-        if (progress.is_extracting) {
-            textElement("Extracting...", FONT_SIZE_SMALL, COLOR_MUTED);
+        const action = if (progress.is_extracting) "Extracting..." else "Downloading...";
+        const mb_received = @as(f64, @floatFromInt(progress.bytes_received)) / (1024.0 * 1024.0);
+        if (progress.total_bytes > 0) {
+            const mb_total = @as(f64, @floatFromInt(progress.total_bytes)) / (1024.0 * 1024.0);
+            const pct = fraction * 100.0;
+            const result = std.fmt.bufPrint(&dl_progress_buf, "{s} {d:.1} / {d:.1} MB ({d:.0}%)", .{ action, mb_received, mb_total, pct }) catch action;
+            dl_progress_len = result.len;
         } else {
-            const mb_received = @as(f64, @floatFromInt(progress.bytes_received)) / (1024.0 * 1024.0);
-            if (progress.total_bytes > 0) {
-                const mb_total = @as(f64, @floatFromInt(progress.total_bytes)) / (1024.0 * 1024.0);
-                const pct = fraction * 100.0;
-                const result = std.fmt.bufPrint(&dl_progress_buf, "Downloading... {d:.1} / {d:.1} MB ({d:.0}%)", .{ mb_received, mb_total, pct }) catch "Downloading...";
-                dl_progress_len = result.len;
-            } else {
-                const result = std.fmt.bufPrint(&dl_progress_buf, "Downloading... {d:.1} MB", .{mb_received}) catch "Downloading...";
-                dl_progress_len = result.len;
-            }
-            textElement(dl_progress_buf[0..dl_progress_len], FONT_SIZE_SMALL, COLOR_MUTED);
+            const result = std.fmt.bufPrint(&dl_progress_buf, "{s} {d:.1} MB", .{ action, mb_received }) catch action;
+            dl_progress_len = result.len;
         }
+        textElement(dl_progress_buf[0..dl_progress_len], FONT_SIZE_SMALL, COLOR_MUTED);
 
         // Track
         openElement("PrgT");
@@ -1104,9 +1101,12 @@ pub fn handleClick() void {
 
         if (!row_clicked) {
             if (c.Clay_PointerOver(clayId("ChkUpd"))) {
-                game_updater.checkForGameUpdate(std.heap.page_allocator) catch |err| {
-                    std.debug.print("Failed to check game update: {}\n", .{err});
-                };
+                // Prevent check while actively downloading
+                if (game_updater.game_update_status != .downloading) {
+                    game_updater.checkForGameUpdate(std.heap.page_allocator) catch |err| {
+                        std.debug.print("Failed to check game update: {}\n", .{err});
+                    };
+                }
             } else if (c.Clay_PointerOver(clayId("DlBtn"))) {
                 // Don't start another download if already downloading
                 if (game_updater.game_update_status != .downloading) {

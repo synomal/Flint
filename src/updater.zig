@@ -27,6 +27,7 @@ pub fn getShortCommit() []const u8 {
 
 /// Check for launcher updates via GitHub nightly release
 pub fn checkForLauncherUpdate(allocator: std.mem.Allocator) !void {
+    std.log.info("Checking for launcher updates...", .{});
     launcher_update_status = .checking;
 
     var bundle = std.crypto.Certificate.Bundle{};
