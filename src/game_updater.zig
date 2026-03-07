@@ -45,6 +45,13 @@ var installed_version_bufs: [MAX_VERSIONS][64]u8 = undefined;
 var installed_version_lens: [MAX_VERSIONS]usize = [_]usize{0} ** MAX_VERSIONS;
 pub var installed_version_count: usize = 0;
 
+pub fn deinit(allocator: std.mem.Allocator) void {
+    if (available_game_sha) |sha| allocator.free(sha);
+    if (game_download_progress.asset_name.len > 0) allocator.free(game_download_progress.asset_name);
+    available_game_sha = null;
+    game_download_progress.asset_name = "";
+}
+
 pub fn getInstalledVersionName(index: usize) []const u8 {
     return installed_version_bufs[index][0..installed_version_lens[index]];
 }
@@ -109,6 +116,7 @@ pub fn checkForGameUpdate(allocator: std.mem.Allocator) !void {
 
     // Read current installed version
     const current_sha = try readGameVersion(allocator);
+    defer if (current_sha) |s| allocator.free(s);
 
     var bundle = std.crypto.Certificate.Bundle{};
     bundle.rescan(allocator) catch {};
@@ -190,6 +198,7 @@ pub fn checkForGameUpdate(allocator: std.mem.Allocator) !void {
         return;
     }
     const published_at = published_at_val.string;
+    if (available_game_sha) |old| allocator.free(old);
     available_game_sha = try allocator.dupe(u8, published_at);
 
     // Compare
@@ -275,6 +284,7 @@ pub fn findGameAssetUrl(allocator: std.mem.Allocator) ![]const u8 {
         {
             const url = asset.object.get("browser_download_url") orelse continue;
             if (url == .string) {
+                if (game_download_progress.asset_name.len > 0) allocator.free(game_download_progress.asset_name);
                 game_download_progress.asset_name = try allocator.dupe(u8, name.string);
                 return try allocator.dupe(u8, url.string);
             }
@@ -290,6 +300,7 @@ pub fn findGameAssetUrl(allocator: std.mem.Allocator) ![]const u8 {
         if (std.mem.endsWith(u8, name.string, ".zip")) {
             const url = asset.object.get("browser_download_url") orelse continue;
             if (url == .string) {
+                if (game_download_progress.asset_name.len > 0) allocator.free(game_download_progress.asset_name);
                 game_download_progress.asset_name = try allocator.dupe(u8, name.string);
                 return try allocator.dupe(u8, url.string);
             }
@@ -576,10 +587,11 @@ fn cleanOldVersions(allocator: std.mem.Allocator) !void {
 pub fn getGameVersionShort(allocator: std.mem.Allocator) !?[]const u8 {
     const sha = try readGameVersion(allocator);
     if (sha) |s| {
+        defer allocator.free(s);
         if (s.len >= 10) {
             return try allocator.dupe(u8, s[0..10]);
         }
-        return s;
+        return try allocator.dupe(u8, s);
     }
     return null;
 }

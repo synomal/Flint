@@ -23,6 +23,11 @@ pub var wine_status: WineStatus = .not_checked;
 pub var game_status: GameStatus = .not_running;
 pub var game_child: ?std.process.Child = null;
 
+pub fn deinit(allocator: std.mem.Allocator) void {
+    if (wine_version) |v| allocator.free(v);
+    wine_version = null;
+}
+
 /// Ensure the GameHDD symlink/junction points to saves_path.
 /// Runs before every launch.
 pub fn ensureSavesLink(allocator: std.mem.Allocator, version_dir: []const u8, saves_path: []const u8) !void {
@@ -324,7 +329,12 @@ pub fn checkWine(allocator: std.mem.Allocator) !void {
     child.stderr_behavior = .Pipe;
     try child.spawn();
 
-    const stdout = child.stdout.?.readToEndAlloc(allocator, 1024) catch "";
+    const stdout = child.stdout.?.readToEndAlloc(allocator, 1024) catch {
+        wine_status = .not_found;
+        return;
+    };
+    defer allocator.free(stdout);
+
     const result = child.wait() catch {
         wine_status = .not_found;
         return;
@@ -332,7 +342,8 @@ pub fn checkWine(allocator: std.mem.Allocator) !void {
 
     if (result.Exited == 0 and stdout.len > 0) {
         // Trim trailing newline
-        wine_version = std.mem.trimRight(u8, stdout, "\n\r ");
+        if (wine_version) |old| allocator.free(old);
+        wine_version = try allocator.dupe(u8, std.mem.trimRight(u8, stdout, "\n\r "));
         wine_status = .available;
     } else {
         wine_status = .not_found;

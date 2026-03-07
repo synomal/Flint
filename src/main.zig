@@ -46,10 +46,12 @@ pub fn main() !void {
 
     // ── Load config ───────────────────────────────────────────────────
     ui.ui_state.config = try config_mod.loadConfig(allocator);
+    defer ui.ui_state.config.deinit(allocator);
     try safe_fs.assertSavesNotInVersions(allocator, ui.ui_state.config.saves_path);
 
     // ── Game version display ──────────────────────────────────────────
-    if (game_updater.getGameVersionShort(allocator) catch null) |gv| {
+    if (try game_updater.getGameVersionShort(allocator)) |gv| {
+        defer allocator.free(gv);
         const written = std.fmt.bufPrint(&ui.ui_state.game_version_display, "nightly-{s}", .{gv}) catch "";
         ui.ui_state.game_version_len = written.len;
     }
@@ -59,11 +61,11 @@ pub fn main() !void {
 
     // Auto-check for game update in background
     const update_thread = std.Thread.spawn(.{}, struct {
-        fn run() void {
-            game_updater.checkForGameUpdate(std.heap.page_allocator) catch {};
+        fn run(alloc: std.mem.Allocator) void {
+            game_updater.checkForGameUpdate(alloc) catch {};
         }
-    }.run, .{}) catch null;
-    if (update_thread) |t| t.detach();
+    }.run, .{allocator}) catch null;
+    defer if (update_thread) |t| t.join();
 
     // ── SDL3 init ─────────────────────────────────────────────────────
     _ = c.SDL_SetAppMetadata("Flint", "1.0", "com.synomal.flint");
@@ -269,4 +271,8 @@ pub fn main() !void {
 
     // Save config on exit
     config_mod.saveConfig(allocator, &ui.ui_state.config) catch {};
+
+    // Final deinit
+    game_updater.deinit(allocator);
+    launcher_mod.deinit(allocator);
 }
