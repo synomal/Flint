@@ -37,7 +37,7 @@ pub fn getBaseDir(allocator: std.mem.Allocator) ![]const u8 {
 pub fn getVersionsDir(allocator: std.mem.Allocator) ![]const u8 {
     const base = try getBaseDir(allocator);
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const result = try std.fmt.bufPrint(&buf, "{s}versions/", .{base});
+    const result = try std.fmt.bufPrint(&buf, "{s}versions{s}", .{ base, std.fs.path.sep_str });
     const duped = try allocator.dupe(u8, result);
     return duped;
 }
@@ -46,7 +46,7 @@ pub fn getVersionsDir(allocator: std.mem.Allocator) ![]const u8 {
 pub fn getSavesDir(allocator: std.mem.Allocator) ![]const u8 {
     const base = try getBaseDir(allocator);
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const result = try std.fmt.bufPrint(&buf, "{s}saves/", .{base});
+    const result = try std.fmt.bufPrint(&buf, "{s}saves{s}", .{ base, std.fs.path.sep_str });
     const duped = try allocator.dupe(u8, result);
     return duped;
 }
@@ -55,7 +55,7 @@ pub fn getSavesDir(allocator: std.mem.Allocator) ![]const u8 {
 pub fn getWinePrefixDir(allocator: std.mem.Allocator) ![]const u8 {
     const base = try getBaseDir(allocator);
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const result = try std.fmt.bufPrint(&buf, "{s}wineprefix/", .{base});
+    const result = try std.fmt.bufPrint(&buf, "{s}wineprefix{s}", .{ base, std.fs.path.sep_str });
     const duped = try allocator.dupe(u8, result);
     return duped;
 }
@@ -68,7 +68,7 @@ pub fn safeDelete(allocator: std.mem.Allocator, path: []const u8) !void {
 
     // Build the versions prefix
     var versions_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const versions_prefix = try std.fmt.bufPrint(&versions_buf, "{s}versions/", .{base});
+    const versions_prefix = try std.fmt.bufPrint(&versions_buf, "{s}versions{s}", .{ base, std.fs.path.sep_str });
 
     // Must start with versions path
     if (!std.mem.startsWith(u8, path, versions_prefix)) {

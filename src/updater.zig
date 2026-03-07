@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const safe_fs = @import("safe_fs.zig");
+const logger = @import("logger.zig");
 
 /// Launcher self-update status
 pub const LauncherUpdateStatus = enum {
@@ -44,27 +45,27 @@ pub fn checkForLauncherUpdate(allocator: std.mem.Allocator) !void {
             .{ .name = "Accept-Encoding", .value = "identity" },
         },
     }) catch |err| {
-        std.debug.print("updater request err: {}\n", .{err});
+        logger.err("updater request err: {}", .{err});
         launcher_update_status = .err;
         return;
     };
     defer req.deinit();
 
     req.sendBodiless() catch |err| {
-        std.debug.print("updater sendBodiless err: {}\n", .{err});
+        logger.err("updater sendBodiless err: {}", .{err});
         launcher_update_status = .err;
         return;
     };
 
     var server_header_buffer: [8192]u8 = undefined;
     var response = req.receiveHead(&server_header_buffer) catch |err| {
-        std.debug.print("updater receiveHead err: {}\n", .{err});
+        logger.err("updater receiveHead err: {}", .{err});
         launcher_update_status = .err;
         return;
     };
 
     if (response.head.status != .ok) {
-        std.debug.print("updater status not ok: {}\n", .{response.head.status});
+        logger.err("updater status not ok: {}", .{response.head.status});
         launcher_update_status = .err;
         return;
     }
@@ -281,6 +282,7 @@ pub fn downloadAndApplyUpdate(allocator: std.mem.Allocator) !void {
         &.{self_path},
         allocator,
     );
+    child.create_no_window = true;
     try child.spawn();
 
     // Exit current process

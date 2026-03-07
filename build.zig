@@ -55,6 +55,9 @@ pub fn build(b: *std.Build) void {
         .name = "flint",
         .root_module = mod,
     });
+    if (target.result.os.tag == .windows) {
+        exe.subsystem = .Windows;
+    }
 
     // Make sure commit.txt is written before compilation
     exe.step.dependOn(&write_commit.step);

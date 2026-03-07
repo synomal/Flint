@@ -1,5 +1,6 @@
 const std = @import("std");
 const safe_fs = @import("safe_fs.zig");
+const logger = @import("logger.zig");
 
 /// Decompress gzip body if detected, otherwise return original.
 /// Caller must free the returned slice if it differs from the input.
@@ -61,6 +62,7 @@ pub fn refreshInstalledVersions(allocator: std.mem.Allocator) void {
     while (it.next() catch null) |entry| {
         if (entry.kind == .directory and installed_version_count < MAX_VERSIONS) {
             const name = entry.name;
+            if (std.mem.eql(u8, name, "downloading")) continue;
             if (name.len <= 64) {
                 @memcpy(installed_version_bufs[installed_version_count][0..name.len], name);
                 installed_version_lens[installed_version_count] = name.len;
@@ -123,34 +125,34 @@ pub fn checkForGameUpdate(allocator: std.mem.Allocator) !void {
             .{ .name = "Accept-Encoding", .value = "identity" },
         },
     }) catch |err| {
-        std.debug.print("game fetch request err: {}\n", .{err});
+        logger.err("game fetch request err: {}", .{err});
         game_update_status = .err;
         return;
     };
     defer req.deinit();
 
     req.sendBodiless() catch |err| {
-        std.debug.print("game sendBodiless err: {}\n", .{err});
+        logger.err("game sendBodiless err: {}", .{err});
         game_update_status = .err;
         return;
     };
 
     var server_header_buffer: [8192]u8 = undefined;
     var response = req.receiveHead(&server_header_buffer) catch |err| {
-        std.debug.print("game receiveHead err: {}\n", .{err});
+        logger.err("game receiveHead err: {}", .{err});
         game_update_status = .err;
         return;
     };
 
     if (response.head.status != .ok) {
-        std.debug.print("game status not ok: {}\n", .{response.head.status});
+        logger.err("game status not ok: {}", .{response.head.status});
         game_update_status = .err;
         return;
     }
 
     var reader = response.reader(&.{});
     const body = reader.allocRemaining(allocator, .unlimited) catch |err| {
-        std.debug.print("game readAllAlloc err: {}\n", .{err});
+        logger.err("game readAllAlloc err: {}", .{err});
         game_update_status = .err;
         return;
     };
@@ -165,7 +167,7 @@ pub fn checkForGameUpdate(allocator: std.mem.Allocator) !void {
 
     // Parse JSON
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_body, .{}) catch |err| {
-        std.debug.print("game json parse err: {}\n", .{err});
+        logger.err("game json parse err: {}", .{err});
         game_update_status = .err;
         return;
     };
@@ -179,20 +181,20 @@ pub fn checkForGameUpdate(allocator: std.mem.Allocator) !void {
 
     // Use published_at timestamp as the version identifier instead of target_commitish,
     // because the nightly tag is force-pushed and target_commitish never changes.
-    const published_at = root.object.get("published_at") orelse {
+    const published_at_val = root.object.get("published_at") orelse {
         game_update_status = .err;
         return;
     };
-    if (published_at != .string) {
+    if (published_at_val != .string) {
         game_update_status = .err;
         return;
     }
-
-    available_game_sha = try allocator.dupe(u8, published_at.string);
+    const published_at = published_at_val.string;
+    available_game_sha = try allocator.dupe(u8, published_at);
 
     // Compare
     if (current_sha) |cs| {
-        if (std.mem.eql(u8, cs, published_at.string)) {
+        if (std.mem.eql(u8, cs, published_at)) {
             game_update_status = .up_to_date;
         } else {
             game_update_status = .update_available;
@@ -320,12 +322,12 @@ pub fn downloadGame(allocator: std.mem.Allocator) !void {
     const version_slug = version_slug_buf[0..slug_len];
 
     // Paths
-    const base = try safe_fs.getBaseDir(allocator);
     const versions = try safe_fs.getVersionsDir(allocator);
     defer allocator.free(versions);
 
     var dl_buf: [std.fs.max_path_bytes]u8 = undefined;
     const downloading_dir = try std.fmt.bufPrint(&dl_buf, "{s}downloading/", .{versions});
+    _ = std.fs.deleteTreeAbsolute(downloading_dir) catch {};
     try safe_fs.ensureDir(downloading_dir);
 
     var zip_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -358,119 +360,125 @@ pub fn downloadGame(allocator: std.mem.Allocator) !void {
     // Get content length from response headers for progress tracking
     game_download_progress.total_bytes = dl_response.head.content_length orelse 0;
 
-    // Write to file
-    const out_file = try std.fs.createFileAbsolute(zip_path, .{});
-    defer out_file.close();
+    {
+        const out_file = try std.fs.createFileAbsolute(zip_path, .{});
+        defer out_file.close();
 
-    var dl_reader = dl_response.reader(&.{});
-    var bytes_written: u64 = 0;
-    const total = game_download_progress.total_bytes;
-    var read_buf: [8192]u8 = undefined;
-    while (total == 0 or bytes_written < total) {
-        // Limit read size to remaining bytes if content-length is known
-        const remaining = if (total > 0) @min(read_buf.len, @as(usize, @intCast(total - bytes_written))) else read_buf.len;
-        const n = dl_reader.readSliceShort(read_buf[0..remaining]) catch break;
-        if (n == 0) break;
-        out_file.writeAll(read_buf[0..n]) catch break;
-        bytes_written += n;
-        game_download_progress.bytes_received = bytes_written;
+        var dl_reader = dl_response.reader(&.{});
+        var bytes_written: u64 = 0;
+        const total = game_download_progress.total_bytes;
+        var read_buf: [8192]u8 = undefined;
+        while (total == 0 or bytes_written < total) {
+            const remaining = if (total > 0) @min(read_buf.len, @as(usize, @intCast(total - bytes_written))) else read_buf.len;
+            const n = try dl_reader.readSliceShort(read_buf[0..remaining]);
+            if (n == 0) break;
+            try out_file.writeAll(read_buf[0..n]);
+            bytes_written += n;
+            game_download_progress.bytes_received = bytes_written;
+        }
+
+        if (total > 0 and bytes_written < total) {
+            logger.err("Download truncated: received {d} of {d} bytes", .{ bytes_written, total });
+            return error.DownloadIncomplete;
+        }
     }
+    logger.info("Download finished, saved to {s}", .{zip_path});
 
     // Optimized sequential extraction for performance (Pass 1: Collect metadata)
     game_download_progress.is_extracting = true;
     game_download_progress.bytes_received = 0;
     game_download_progress.total_bytes = 0;
-
-    var zip_file = try std.fs.openFileAbsolute(zip_path, .{});
-    defer zip_file.close();
-
-    // 1MB buffer for first pass (reading CD at end of file)
-    var reader_buf: [1024 * 1024]u8 = undefined;
-    var buffered_reader = zip_file.reader(&reader_buf);
-    var zip_iter = try std.zip.Iterator.init(&buffered_reader);
-
-    // Pass 1: Collect all entry metadata and filenames in one pass
-    var entries = std.ArrayList(FastEntry).empty;
-    defer {
-        for (entries.items) |e| allocator.free(e.filename);
-        entries.deinit(allocator);
-    }
-
-    var total_uncompressed: u64 = 0;
-    while (try zip_iter.next()) |entry| {
-        // Collect filenames while we are at the CD section.
-        // next() leaves the reader potentially at the end of the CDFH or extra field.
-        // We reset it to right after the CDFH to read the filename.
-        try buffered_reader.seekTo(entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader));
-
-        const filename = try allocator.alloc(u8, entry.filename_len);
-        errdefer allocator.free(filename);
-        try buffered_reader.interface.readSliceAll(filename);
-
-        try entries.append(allocator, .{
-            .inner = entry,
-            .filename = filename,
-            .file_offset = entry.file_offset, // Cache it for sorting
-        });
-        total_uncompressed += entry.uncompressed_size;
-    }
-    game_download_progress.total_bytes = total_uncompressed;
-
-    // Pass 2: Sort by offset to eliminate Yo-Yo seeking
-    std.mem.sort(FastEntry, entries.items, {}, FastEntry.lessThan);
-
     var target_buf_dir: [std.fs.max_path_bytes]u8 = undefined;
     const target_dir_path = try std.fmt.bufPrint(&target_buf_dir, "{s}nightly-{s}", .{ versions, version_slug });
-    try safe_fs.ensureDir(target_dir_path);
 
-    var target_dir = try std.fs.openDirAbsolute(target_dir_path, .{});
-    defer target_dir.close();
+    {
+        var zip_file = try std.fs.openFileAbsolute(zip_path, .{});
+        defer zip_file.close();
 
-    // Pass 3: Sequential extraction with large I/O buffers
-    // Reset our reader to reuse the large buffer for extraction
-    try zip_file.seekTo(0);
-    reader_buf = undefined; // Invalidate buffer
-    var extract_reader = zip_file.reader(&reader_buf);
+        // 1MB buffer for first pass (reading CD at end of file) - Allocated on heap to avoid stack overflow
+        const big_buf = try allocator.alloc(u8, 1024 * 1024);
+        defer allocator.free(big_buf);
 
-    var extracted_bytes: u64 = 0;
+        var buffered_reader = zip_file.reader(big_buf);
+        var zip_iter = try std.zip.Iterator.init(&buffered_reader);
 
-    for (entries.items) |entry| {
-        try fastExtractEntry(&extract_reader, entry, target_dir);
-        extracted_bytes += entry.inner.uncompressed_size;
-        game_download_progress.bytes_received = extracted_bytes;
+        // Pass 1: Collect all entry metadata and filenames in one pass
+        var entries = std.ArrayListUnmanaged(FastEntry).empty;
+        defer {
+            for (entries.items) |e| allocator.free(e.filename);
+            entries.deinit(allocator);
+        }
+
+        var total_uncompressed: u64 = 0;
+        while (try zip_iter.next()) |entry| {
+            try buffered_reader.seekTo(entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader));
+
+            const filename = try allocator.alloc(u8, entry.filename_len);
+            errdefer allocator.free(filename);
+            try buffered_reader.interface.readSliceAll(filename);
+
+            try entries.append(allocator, .{
+                .inner = entry,
+                .filename = filename,
+                .file_offset = entry.file_offset, // Cache it for sorting
+            });
+            total_uncompressed += entry.uncompressed_size;
+        }
+        game_download_progress.total_bytes = total_uncompressed;
+        try safe_fs.ensureDir(target_dir_path);
+
+        // Pass 2: Sort by offset to eliminate Yo-Yo seeking
+        std.mem.sort(FastEntry, entries.items, {}, FastEntry.lessThan);
+
+        var target_dir = try std.fs.openDirAbsolute(target_dir_path, .{});
+        defer target_dir.close();
+
+        // Pass 3: Sequential extraction with large I/O buffers
+        try zip_file.seekTo(0);
+        var extract_reader = zip_file.reader(big_buf);
+
+        const write_buf = try allocator.alloc(u8, 64 * 1024);
+        defer allocator.free(write_buf);
+        const flate_buf = try allocator.alloc(u8, std.compress.flate.max_window_len);
+        defer allocator.free(flate_buf);
+
+        var extracted_bytes: u64 = 0;
+        for (entries.items) |entry| {
+            try fastExtractEntry(&extract_reader, entry, target_dir, write_buf, flate_buf);
+            extracted_bytes += entry.inner.uncompressed_size;
+            game_download_progress.bytes_received = extracted_bytes;
+        }
     }
 
-    std.debug.print("Extraction complete\n", .{});
+    logger.info("Extraction complete", .{});
 
     // Check for single wrapper directory and strip it
+    logger.info("Finalizing installation...", .{});
+    // Check for single wrapper directory and strip it
     stripWrapperDir(allocator, target_dir_path) catch |err| {
-        std.debug.print("stripWrapperDir failed (non-fatal): {}\n", .{err});
+        logger.warn("stripWrapperDir failed (non-fatal): {}", .{err});
     };
 
-    // Write game version
-    writeGameVersion(allocator, sha) catch |err| {
-        std.debug.print("writeGameVersion failed: {}\n", .{err});
-        return err;
-    };
-
-    // Clean up downloading dir
-    safe_fs.safeDelete(allocator, downloading_dir) catch {};
-
-    // Clean old versions
-    cleanOldVersions(allocator) catch |err| {
-        std.debug.print("cleanOldVersions failed (non-fatal): {}\n", .{err});
-    };
-
+    // Report success to UI immediately
     game_download_progress.done = true;
     game_download_progress.is_downloading = false;
     game_download_progress.is_extracting = false;
     game_update_status = .up_to_date;
-    std.debug.print("Game update installed successfully\n", .{});
-
-    // Refresh the installed versions list
     refreshInstalledVersions(allocator);
 
-    _ = base;
+    // Write game version
+    if (sha.len > 0) {
+        writeGameVersion(allocator, sha) catch |err| {
+            logger.warn("writeGameVersion failed (non-fatal): {}", .{err});
+        };
+    }
+
+    // Clean up background tasks
+    logger.info("Cleanup in background...", .{});
+    safe_fs.safeDelete(allocator, downloading_dir) catch {};
+    cleanOldVersions(allocator) catch {};
+
+    logger.info("Game update installed successfully", .{});
 }
 
 /// If extracted dir has a single top-level folder, move its contents up using native Zig fs ops
@@ -494,15 +502,30 @@ fn stripWrapperDir(allocator: std.mem.Allocator, target_dir_path: []const u8) !v
     if (single_dir) |wrapper_name| {
         defer allocator.free(wrapper_name);
 
-        var wrapper_dir = try dir.openDir(wrapper_name, .{ .iterate = true });
-        defer wrapper_dir.close();
+        {
+            var wrapper_dir = try dir.openDir(wrapper_name, .{ .iterate = true });
+            defer wrapper_dir.close();
 
-        // Move all entries from wrapper_dir to dir
-        var wrapper_it = wrapper_dir.iterate();
-        while (try wrapper_it.next()) |entry| {
-            const old_path = try std.fs.path.join(allocator, &.{ wrapper_name, entry.name });
-            defer allocator.free(old_path);
-            try dir.rename(old_path, entry.name);
+            // Collect all names first to avoid iteration issues during rename
+            var names = std.ArrayListUnmanaged([]const u8).empty;
+            defer {
+                for (names.items) |n| allocator.free(n);
+                names.deinit(allocator);
+            }
+
+            var wrapper_it = wrapper_dir.iterate();
+            while (try wrapper_it.next()) |entry| {
+                try names.append(allocator, try allocator.dupe(u8, entry.name));
+            }
+
+            // Move all collected entries from wrapper_dir to dir
+            for (names.items) |name| {
+                const old_path = try std.fs.path.join(allocator, &.{ wrapper_name, name });
+                defer allocator.free(old_path);
+                dir.rename(old_path, name) catch |err| {
+                    logger.err("Rename failed for {s}: {}", .{ name, err });
+                };
+            }
         }
 
         // Remove the now-empty wrapper directory
@@ -518,7 +541,7 @@ fn cleanOldVersions(allocator: std.mem.Allocator) !void {
     var dir = std.fs.openDirAbsolute(versions_dir, .{ .iterate = true }) catch return;
     defer dir.close();
 
-    var version_names = std.ArrayList([]const u8).empty;
+    var version_names = std.ArrayListUnmanaged([]const u8).empty;
     defer {
         for (version_names.items) |n| allocator.free(n);
         version_names.deinit(allocator);
@@ -571,7 +594,13 @@ const FastEntry = struct {
     }
 };
 
-pub fn fastExtractEntry(stream: *std.fs.File.Reader, entry: FastEntry, dest_dir: std.fs.Dir) !void {
+pub fn fastExtractEntry(
+    stream: *std.fs.File.Reader,
+    entry: FastEntry,
+    dest_dir: std.fs.Dir,
+    write_buf: []u8,
+    flate_buf: []u8,
+) !void {
     if (std.mem.endsWith(u8, entry.filename, "/")) {
         try dest_dir.makePath(entry.filename);
         return;
@@ -590,28 +619,23 @@ pub fn fastExtractEntry(stream: *std.fs.File.Reader, entry: FastEntry, dest_dir:
     var out_f = try dest_dir.createFile(entry.filename, .{});
     defer out_f.close();
 
-    // Use a 64KB write buffer for the output file
-    var write_buf: [64 * 1024]u8 = undefined;
-    var buffered_writer = out_f.writer(&write_buf);
+    var buffered_writer = out_f.writer(write_buf);
 
     switch (entry.inner.compression_method) {
         .store => {
             try stream.interface.streamExact64(&buffered_writer.interface, entry.inner.uncompressed_size);
         },
         .deflate => {
-            var flate_buf: [std.compress.flate.max_window_len]u8 = undefined;
-            var decompressor = std.compress.flate.Decompress.init(&stream.interface, .raw, &flate_buf);
+            var decompressor = std.compress.flate.Decompress.init(&stream.interface, .raw, flate_buf);
 
             var remaining = entry.inner.uncompressed_size;
             while (remaining > 0) {
-                const chunk = try buffered_writer.interface.writableSliceGreedy(1);
-                const to_read = @min(remaining, @as(u64, @intCast(chunk.len)));
-                const read = try decompressor.reader.readSliceShort(chunk[0..@intCast(to_read)]);
-                if (read == 0) break;
-                buffered_writer.interface.advance(read);
+                var chunk_buf: [32 * 1024]u8 = undefined;
+                const to_read = @min(remaining, @as(u64, @intCast(chunk_buf.len)));
+                const read = try decompressor.reader.readSliceShort(chunk_buf[0..@intCast(to_read)]);
+                if (read == 0) return error.EndOfStream;
+                try buffered_writer.interface.writeAll(chunk_buf[0..read]);
                 remaining -= read;
-                // Flush if buffer is getting full
-                if (buffered_writer.interface.end > 32768) try buffered_writer.interface.flush();
             }
         },
         else => return error.UnsupportedCompressionMethod,

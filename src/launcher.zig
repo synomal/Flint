@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const safe_fs = @import("safe_fs.zig");
+const logger = @import("logger.zig");
 
 /// Wine status for UI display
 pub const WineStatus = enum {
@@ -27,24 +28,30 @@ pub var game_child: ?std.process.Child = null;
 pub fn ensureSavesLink(allocator: std.mem.Allocator, version_dir: []const u8, saves_path: []const u8) !void {
     // Ensure Windows64 directory exists at the root of the install
     var win64_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const win64_path = try std.fmt.bufPrint(&win64_buf, "{s}/Windows64", .{version_dir});
+    const win64_path = try std.fmt.bufPrint(&win64_buf, "{s}{s}Windows64", .{ version_dir, std.fs.path.sep_str });
+    logger.info("Ensuring Windows64 dir: {s}", .{win64_path});
     safe_fs.ensureDir(win64_path) catch {};
 
     var gamehdd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const gamehdd_path = try std.fmt.bufPrint(&gamehdd_buf, "{s}/Windows64/GameHDD", .{version_dir});
+    const gamehdd_path = try std.fmt.bufPrint(&gamehdd_buf, "{s}{s}Windows64{s}GameHDD", .{ version_dir, std.fs.path.sep_str, std.fs.path.sep_str });
 
-    const stat = std.fs.cwd().statFile(gamehdd_path) catch |err| switch (err) {
+    logger.info("Checking for GameHDD at: {s}", .{gamehdd_path});
+    std.fs.accessAbsolute(gamehdd_path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
+            logger.info("GameHDD not found, creating link to: {s}", .{saves_path});
             // Does not exist — create symlink/junction
             try createLink(allocator, gamehdd_path, saves_path);
             return;
         },
-        else => return err,
+        else => {
+            logger.err("Error accessing GameHDD: {}", .{err});
+            return err;
+        },
     };
-    _ = stat;
 
     // Check if it's a symlink
-    const link_target = std.fs.readLinkAbsolute(gamehdd_path, &gamehdd_buf) catch |err| switch (err) {
+    var link_target_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const link_target = std.fs.readLinkAbsolute(gamehdd_path, &link_target_buf) catch |err| switch (err) {
         error.NotLink => {
             // It's a real directory — move contents to saves_path, then replace with link
             try moveContentsToSaves(allocator, gamehdd_path, saves_path);
@@ -52,33 +59,94 @@ pub fn ensureSavesLink(allocator: std.mem.Allocator, version_dir: []const u8, sa
             try createLink(allocator, gamehdd_path, saves_path);
             return;
         },
-        else => return err,
+        else => {
+            // error.Unexpected happens on Windows directory junctions, or it might be another link read err
+            logger.warn("Could not read link (usually normal for Windows junctions): {}", .{err});
+            try std.fs.deleteTreeAbsolute(gamehdd_path);
+            try createLink(allocator, gamehdd_path, saves_path);
+            return;
+        },
     };
 
     // It is a symlink — check if correct target
-    if (std.mem.eql(u8, link_target, saves_path)) {
+    // On Windows, the link target might have a \??\ prefix.
+    if (std.mem.eql(u8, link_target, saves_path) or std.mem.endsWith(u8, link_target, saves_path)) {
         // Correct target, do nothing
         return;
     }
 
     // Wrong target — delete and re-create
-    try std.fs.deleteFileAbsolute(gamehdd_path);
+    // Use deleteTreeAbsolute in case it is a directory junction instead of a file
+    try std.fs.deleteTreeAbsolute(gamehdd_path);
     try createLink(allocator, gamehdd_path, saves_path);
 }
 
 fn createLink(allocator: std.mem.Allocator, link_path: []const u8, target: []const u8) !void {
     if (comptime builtin.os.tag == .windows) {
         // Windows: use directory junction via mklink /j
+        // mklink expects backslashes for paths
+        const link_win = try allocator.dupe(u8, link_path);
+        defer allocator.free(link_win);
+        for (link_win) |*c_ptr| if (c_ptr.* == '/') {
+            c_ptr.* = '\\';
+        };
+
+        const target_win = try allocator.dupe(u8, target);
+        defer allocator.free(target_win);
+        for (target_win) |*c_ptr| if (c_ptr.* == '/') {
+            c_ptr.* = '\\';
+        };
+
+        logger.info("Windows: mklink /j \"{s}\" \"{s}\"", .{ link_win, target_win });
+
         // cmd /c mklink /j <link> <target>
-        const argv = &[_][]const u8{ "cmd", "/c", "mklink", "/j", link_path, target };
+        const argv = &[_][]const u8{ "cmd", "/c", "mklink", "/j", link_win, target_win };
         var child = std.process.Child.init(argv, allocator);
         child.create_no_window = true;
         child.stdout_behavior = .Ignore;
         child.stderr_behavior = .Ignore;
-        const term = try child.spawnAndWait();
-        switch (term) {
-            .Exited => |code| if (code != 0) return error.SystemResources,
-            else => return error.SystemResources,
+
+        var success = false;
+
+        if (child.spawnAndWait()) |term| {
+            switch (term) {
+                .Exited => |code| if (code == 0) {
+                    success = true;
+                },
+                else => {},
+            }
+        } else |_| {}
+
+        if (!success) {
+            logger.warn("Windows mklink failed, attempting to remove existing directory and retry...", .{});
+
+            // Try to force remove it using cmd /c rmdir /q /s
+            const rm_argv = &[_][]const u8{ "cmd", "/c", "rmdir", "/q", "/s", link_win };
+            var rm_child = std.process.Child.init(rm_argv, allocator);
+            rm_child.create_no_window = true;
+            rm_child.stdout_behavior = .Ignore;
+            rm_child.stderr_behavior = .Ignore;
+            _ = rm_child.spawnAndWait() catch {};
+
+            // Retry mklink
+            var retry_child = std.process.Child.init(argv, allocator);
+            retry_child.create_no_window = true;
+            retry_child.stdout_behavior = .Ignore;
+            retry_child.stderr_behavior = .Ignore;
+
+            if (retry_child.spawnAndWait()) |retry_term| {
+                switch (retry_term) {
+                    .Exited => |code| if (code == 0) {
+                        success = true;
+                    },
+                    else => {},
+                }
+            } else |_| {}
+        }
+
+        if (!success) {
+            logger.err("Failed to create directory junction for GameHDD", .{});
+            return error.SystemResources;
         }
     } else {
         // Linux: standard symlink
@@ -92,6 +160,9 @@ fn moveContentsToSaves(allocator: std.mem.Allocator, src_dir: []const u8, saves_
 
     var it = dir.iterate();
     while (try it.next()) |entry| {
+        // Skip Index files (they are game assets, not saves)
+        if (std.mem.startsWith(u8, entry.name, "Index")) continue;
+
         var src_buf: [std.fs.max_path_bytes]u8 = undefined;
         const src_path = try std.fmt.bufPrint(&src_buf, "{s}/{s}", .{ src_dir, entry.name });
         var dst_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -136,45 +207,54 @@ pub fn spawnGame(allocator: std.mem.Allocator, version_dir: []const u8, saves_pa
         if (preset.ip.len > 0) {
             try argv.append(allocator, "-ip");
             try argv.append(allocator, preset.ip);
+            logger.info("Arg: -ip {s}", .{preset.ip});
         }
         if (preset.port.len > 0) {
             try argv.append(allocator, "-port");
             try argv.append(allocator, preset.port);
+            logger.info("Arg: -port {s}", .{preset.port});
         }
     }
+
+    // Minecraft.Client.exe is in the version root
+    const exe_path = try std.fs.path.join(allocator, &.{ version_dir, "Minecraft.Client.exe" });
+    defer allocator.free(exe_path);
+    argv.items[0] = exe_path;
+
+    var env_map: ?std.process.EnvMap = null;
+    defer if (env_map) |*m| m.deinit();
 
     if (comptime builtin.os.tag == .linux) {
         // Native Linux: Use Wine
         const wineprefix = try safe_fs.getWinePrefixDir(allocator);
         defer allocator.free(wineprefix);
 
-        var env_map = try std.process.getEnvMap(allocator);
-        defer env_map.deinit();
-        try env_map.put("WINEPREFIX", wineprefix);
-        try env_map.put("WINEDEBUG", "-all"); // Suppress wine spam
+        env_map = try std.process.getEnvMap(allocator);
+        try env_map.?.put("WINEPREFIX", wineprefix);
+        try env_map.?.put("WINEDEBUG", "-all"); // Suppress wine spam
 
         // Prepend wine command
         try argv.insert(allocator, 0, "wine");
-
-        std.debug.print("Spawning game with args: ", .{});
-        for (argv.items) |arg| {
-            std.debug.print("'{s}' ", .{arg});
-        }
-        std.debug.print("\n", .{});
-
-        var child = std.process.Child.init(argv.items, allocator);
-        child.cwd = version_dir;
-        child.env_map = &env_map;
-        try child.spawn();
-        game_child = child;
-    } else {
-        // Windows: Native execution
-        var child = std.process.Child.init(argv.items, allocator);
-        child.cwd = version_dir;
-        child.create_no_window = true;
-        try child.spawn();
-        game_child = child;
     }
+
+    logger.print("[INFO] Final argv: ", .{});
+    for (argv.items) |arg| {
+        logger.print("'{s}' ", .{arg});
+    }
+    logger.print("\n", .{});
+    logger.info("CWD: {s}", .{version_dir});
+
+    var child = std.process.Child.init(argv.items, allocator);
+    child.cwd = version_dir;
+
+    if (comptime builtin.os.tag == .windows) {
+        child.create_no_window = true;
+    } else if (comptime builtin.os.tag == .linux) {
+        if (env_map) |*m| child.env_map = m;
+    }
+
+    try child.spawn();
+    game_child = child;
 
     game_status = .running;
 }
@@ -187,21 +267,47 @@ pub fn launch(allocator: std.mem.Allocator, config: @import("config.zig").Config
         defer allocator.free(version_dir);
         try spawnGame(allocator, version_dir, config.saves_path, config.presets[config.active_preset], multiplayer);
     } else {
-        std.debug.print("No game version found to launch.\n", .{});
+        logger.err("No game version found to launch.", .{});
     }
 }
 
 /// Check if game process is still running (called each frame)
 pub fn pollGameProcess() void {
     if (game_child) |*child| {
-        const result = child.wait() catch {
-            game_status = .not_running;
-            game_child = null;
-            return;
-        };
-        _ = result;
-        game_status = .not_running;
-        game_child = null;
+        if (comptime builtin.os.tag == .windows) {
+            // Non-blocking check on Windows
+            // In Zig 0.15.2, child.id is the process HANDLE on Windows.
+            const result = std.os.windows.kernel32.WaitForSingleObject(child.id, 0);
+            if (result == std.os.windows.WAIT_OBJECT_0) {
+                // Determine exit code and cleanup using standard library's wait()
+                // wait() handle closure and reaping correctly.
+                _ = child.wait() catch |err| {
+                    logger.err("Error waiting for game process: {}", .{err});
+                };
+
+                game_status = .not_running;
+                game_child = null;
+            }
+        } else {
+            // Non-blocking wait on POSIX (Linux/Wine)
+            const wait_res = std.posix.waitpid(child.id, std.posix.W.NOHANG);
+            if (wait_res.pid != 0) {
+                // Process has exited or errored (pid == -1).
+                // We've already reaped it, so just update state.
+                const s = wait_res.status;
+                if (std.posix.W.IFEXITED(s)) {
+                    child.term = .{ .Exited = std.posix.W.EXITSTATUS(s) };
+                } else if (std.posix.W.IFSIGNALED(s)) {
+                    child.term = .{ .Signal = std.posix.W.TERMSIG(s) };
+                } else if (std.posix.W.IFSTOPPED(s)) {
+                    child.term = .{ .Stopped = std.posix.W.STOPSIG(s) };
+                } else {
+                    child.term = .{ .Unknown = s };
+                }
+                game_status = .not_running;
+                game_child = null;
+            }
+        }
     }
 }
 

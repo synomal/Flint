@@ -7,6 +7,7 @@ const game_updater = @import("game_updater.zig");
 const updater = @import("updater.zig");
 const launcher_mod = @import("launcher.zig");
 const renderer_mod = @import("renderer.zig");
+const logger = @import("logger.zig");
 
 /// Active sidebar tab
 pub const Tab = enum(u8) {
@@ -231,7 +232,8 @@ const COLOR_PANEL_BG = rgba(0x2A, 0x1E, 0x3A, 0x99);
 const COLOR_BOTTOM_BG = rgba(0x1A, 0x11, 0x2A, 0xBB);
 const COLOR_WHITE = rgba(0xFF, 0xFF, 0xFF, 0xFF);
 const COLOR_MUTED = rgba(0xAA, 0xAA, 0xAA, 0xFF);
-const COLOR_GREEN = rgba(0x5D, 0x23, 0xA4, 0xFF);
+const COLOR_GREEN = rgba(0x5D, 0x23, 0xA4, 0xFF); // Actually Purple (Brand color)
+const COLOR_REAL_GREEN = rgba(0x23, 0xA4, 0x5D, 0xFF); // Real Green for success
 const COLOR_TAB_ACTIVE = rgba(0x2A, 0x1E, 0x3A, 0xFF);
 const COLOR_TRANSPARENT = rgba(0, 0, 0, 0);
 const COLOR_BORDER = rgba(0x45, 0x35, 0x55, 0xFF);
@@ -525,6 +527,7 @@ fn layoutTab(label: []const u8, tab: Tab) void {
     const is_active = ui_state.active_tab == tab;
 
     openElement(label);
+
     c.Clay__ConfigureOpenElement(.{
         .layout = .{
             .sizing = .{ .width = growWidth(), .height = fixedH(36) },
@@ -733,7 +736,7 @@ fn layoutVersionsTab() void {
 
     // Done message
     if (game_updater.game_download_progress.done) {
-        textElement("Update installed successfully!", FONT_SIZE_NORMAL, COLOR_GREEN);
+        textElement("Update installed successfully!", FONT_SIZE_NORMAL, COLOR_REAL_GREEN);
     }
 
     // Version list
@@ -1045,10 +1048,13 @@ pub fn handleClick() void {
     // Check sidebar tab clicks
     if (c.Clay_PointerOver(clayId("Play"))) {
         ui_state.active_tab = .play;
+        game_updater.game_download_progress.done = false;
     } else if (c.Clay_PointerOver(clayId("Versions"))) {
         ui_state.active_tab = .versions;
+        game_updater.game_download_progress.done = false;
     } else if (c.Clay_PointerOver(clayId("Settings"))) {
         ui_state.active_tab = .settings;
+        game_updater.game_download_progress.done = false;
     }
 
     // Check preset card clicks
@@ -1059,22 +1065,26 @@ pub fn handleClick() void {
     }
 
     if (c.Clay_PointerOver(clayId("Singleplayer"))) {
+        logger.info("Clicking Singleplayer", .{});
+        if (launcher_mod.game_status != .not_running) return;
         commitActiveField();
         ui_state.active_field = .none;
         launcher_mod.launch(std.heap.page_allocator, ui_state.config, false) catch |err| {
-            std.debug.print("Failed to launch singleplayer: {}\n", .{err});
+            logger.err("Failed to launch singleplayer: {}", .{err});
         };
     } else if (c.Clay_PointerOver(clayId("Multiplayer"))) {
+        logger.info("Clicking Multiplayer", .{});
+        if (launcher_mod.game_status != .not_running) return;
         commitActiveField();
         ui_state.active_field = .none;
         launcher_mod.launch(std.heap.page_allocator, ui_state.config, true) catch |err| {
-            std.debug.print("Failed to launch multiplayer: {}\n", .{err});
+            logger.err("Failed to launch multiplayer: {}", .{err});
         };
     } else if (c.Clay_PointerOver(clayId("AddPrsBtn"))) {
         commitActiveField();
         ui_state.active_field = .none;
         addPreset() catch |err| {
-            std.debug.print("Failed to add preset: {}\n", .{err});
+            logger.err("Failed to add preset: {}", .{err});
         };
     } else {
         // Check dynamic rows
@@ -1084,7 +1094,7 @@ pub fn handleClick() void {
                 commitActiveField();
                 ui_state.active_field = .none;
                 deletePreset(@intCast(i)) catch |err| {
-                    std.debug.print("Failed to delete preset: {}\n", .{err});
+                    logger.err("Failed to delete preset: {}", .{err});
                 };
                 row_clicked = true;
                 break;
@@ -1104,7 +1114,7 @@ pub fn handleClick() void {
                 // Prevent check while actively downloading
                 if (game_updater.game_update_status != .downloading) {
                     game_updater.checkForGameUpdate(std.heap.page_allocator) catch |err| {
-                        std.debug.print("Failed to check game update: {}\n", .{err});
+                        logger.err("Failed to check game update: {}", .{err});
                     };
                 }
             } else if (c.Clay_PointerOver(clayId("DlBtn"))) {
@@ -1113,22 +1123,22 @@ pub fn handleClick() void {
                     const thread = std.Thread.spawn(.{}, struct {
                         fn run() void {
                             game_updater.downloadGame(std.heap.page_allocator) catch |err| {
-                                std.debug.print("Failed to download game: {}\n", .{err});
+                                logger.err("Failed to download game: {}", .{err});
                                 game_updater.game_update_status = .err;
                             };
                         }
                     }.run, .{}) catch |err| {
-                        std.debug.print("Failed to spawn download thread: {}\n", .{err});
+                        logger.err("Failed to spawn download thread: {}", .{err});
                         return;
                     };
                     thread.detach();
                 }
             } else if (c.Clay_PointerOver(clayId("ChkLU"))) {
                 updater.checkForLauncherUpdate(std.heap.page_allocator) catch |err| {
-                    std.debug.print("Failed to check launcher update: {}\n", .{err});
+                    logger.err("Failed to check launcher update: {}", .{err});
                 };
             } else if (c.Clay_PointerOver(clayId("ChBtn"))) {
-                std.debug.print("TODO: Implement file picker for saves path\n", .{});
+                logger.info("TODO: Implement file picker for saves path", .{});
             } else if (c.Clay_PointerOver(c.Clay__HashStringWithOffset(clayStr("Username"), 1, 0))) {
                 commitActiveField();
                 ui_state.active_field = .username;
@@ -1165,7 +1175,7 @@ pub fn handleClick() void {
     if (comptime builtin.os.tag == .linux) {
         if (c.Clay_PointerOver(clayId("RstW"))) {
             launcher_mod.resetWinePrefix(std.heap.page_allocator) catch |err| {
-                std.debug.print("Failed to reset wine prefix: {}\n", .{err});
+                logger.err("Failed to reset wine prefix: {}", .{err});
             };
         }
     }

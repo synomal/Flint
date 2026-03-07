@@ -9,6 +9,7 @@ const safe_fs = @import("safe_fs.zig");
 const launcher_mod = @import("launcher.zig");
 const game_updater = @import("game_updater.zig");
 const updater_mod = @import("updater.zig");
+const logger = @import("logger.zig");
 
 // ── Embedded assets ───────────────────────────────────────────────────
 const bg_data = @embedFile("assets/background.jpg");
@@ -31,6 +32,8 @@ pub fn main() !void {
     // ── Startup cleanup ───────────────────────────────────────────────
     updater_mod.cleanupOldLauncher();
     try safe_fs.ensureBaseDirs(allocator);
+    try logger.init(allocator);
+    defer logger.deinit();
 
     // Delete abandoned downloading/ dir
     const versions_dir = try safe_fs.getVersionsDir(allocator);
