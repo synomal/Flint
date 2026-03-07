@@ -13,9 +13,9 @@ zig build run
 
 ## Planned Features
 
-- Windows runtime
-- Full cross-platform support (Windows, macOS (Maybe))
+- ~~Windows runtime~~
+- Full cross-platform support (macOS (Maybe))
 - Robust self-update
 - Modding support when available
 - Save data handling (GameHDD is backed up but other client settings are not)
-- Directory junction support on Windows
+- ~~Directory junction support on Windows~~
