@@ -5,25 +5,13 @@ pub const Preset = struct {
     name: []const u8 = "",
     username: []const u8 = "",
     ip: []const u8 = "",
-    port: []const u8 = "",
+    port: []const u8 = "25565",
 };
 
 pub const Config = struct {
     saves_path: []const u8 = "",
     active_preset: u32 = 0,
     presets: []Preset = &[_]Preset{},
-
-    pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
-        if (self.saves_path.len > 0) allocator.free(self.saves_path);
-        for (self.presets) |preset| {
-            if (preset.name.len > 0) allocator.free(preset.name);
-            if (preset.username.len > 0) allocator.free(preset.username);
-            if (preset.ip.len > 0) allocator.free(preset.ip);
-            if (preset.port.len > 0) allocator.free(preset.port);
-        }
-        if (self.presets.len > 0) allocator.free(self.presets);
-        self.* = .{};
-    }
 };
 
 const safe_fs = @import("safe_fs.zig");
@@ -43,10 +31,7 @@ pub fn loadConfig(allocator: std.mem.Allocator) !Config {
 
             // Initial default preset
             const default_presets = try allocator.alloc(Preset, 1);
-            default_presets[0] = .{
-                .name = try allocator.dupe(u8, "Default"),
-                .port = try allocator.dupe(u8, "25565"),
-            };
+            default_presets[0] = .{ .name = "Default", .port = "25565" };
             cfg.presets = default_presets;
             return cfg;
         },
@@ -64,10 +49,7 @@ pub fn loadConfig(allocator: std.mem.Allocator) !Config {
         const saves = try safe_fs.getSavesDir(allocator);
         config.saves_path = saves;
         const default_presets = try allocator.alloc(Preset, 1);
-        default_presets[0] = .{
-            .name = try allocator.dupe(u8, "Default"),
-            .port = try allocator.dupe(u8, "25565"),
-        };
+        default_presets[0] = .{ .name = "Default", .port = "25565" };
         config.presets = default_presets;
         return config;
     };
@@ -90,7 +72,7 @@ pub fn loadConfig(allocator: std.mem.Allocator) !Config {
                 const count = presets_val.array.items.len;
                 config.presets = try allocator.alloc(Preset, count);
                 for (presets_val.array.items, 0..) |item, i| {
-                    config.presets[i] = .{}; // Initialize with defaults (empty strings)
+                    config.presets[i] = .{}; // Initialize with defaults
                     if (item == .object) {
                         if (item.object.get("name")) |n| {
                             if (n == .string) config.presets[i].name = try allocator.dupe(u8, n.string);
@@ -105,9 +87,6 @@ pub fn loadConfig(allocator: std.mem.Allocator) !Config {
                             if (p == .string) config.presets[i].port = try allocator.dupe(u8, p.string);
                         }
                     }
-                    // Final fallback for required fields
-                    if (config.presets[i].name.len == 0) config.presets[i].name = try allocator.dupe(u8, "Default");
-                    if (config.presets[i].port.len == 0) config.presets[i].port = try allocator.dupe(u8, "25565");
                 }
             }
         }
@@ -121,10 +100,7 @@ pub fn loadConfig(allocator: std.mem.Allocator) !Config {
     // Ensure at least one preset exists
     if (config.presets.len == 0) {
         const default_presets = try allocator.alloc(Preset, 1);
-        default_presets[0] = .{
-            .name = try allocator.dupe(u8, "Default"),
-            .port = try allocator.dupe(u8, "25565"),
-        };
+        default_presets[0] = .{ .name = "Default", .port = "25565" };
         config.presets = default_presets;
     }
 

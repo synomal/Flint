@@ -845,7 +845,7 @@ fn layoutSettingsTab() void {
     textElement(updater.getShortCommit(), FONT_SIZE_NORMAL, COLOR_WHITE);
 
     // Check for updates button (launcher)
-    button("ChkLU", "Launcher update non functional rn", FONT_SIZE_SMALL, COLOR_GREEN, fitWidth());
+    button("ChkLU", "Check for Update", FONT_SIZE_SMALL, COLOR_GREEN, fitWidth());
 
     closeElement(); // LaunchR
 }
