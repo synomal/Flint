@@ -12,7 +12,7 @@ var base_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
 var base_dir_len: usize = 0;
 var base_dir_initialized: bool = false;
 
-/// Returns the resolved base directory ~/.lcelauncher/
+/// Returns the resolved base directory ~/.flintlauncher/ (or %USERPROFILE%\.flintlauncher\ on Windows)
 pub fn getBaseDir(allocator: std.mem.Allocator) ![]const u8 {
     if (base_dir_initialized) {
         return base_dir_buf[0..base_dir_len];
@@ -60,7 +60,7 @@ pub fn getWinePrefixDir(allocator: std.mem.Allocator) ![]const u8 {
     return duped;
 }
 
-/// Safe delete: validates path starts with ~/.lcelauncher/versions/ before any delete.
+/// Safe delete: validates path starts with ~/.flintlauncher/versions/ before any delete.
 /// Returns error.UnsafePath if validation fails.
 /// MUST NEVER be called on saves/ or wineprefix/.
 pub fn safeDelete(allocator: std.mem.Allocator, path: []const u8) !void {

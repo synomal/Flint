@@ -4,12 +4,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // --- Write commit.txt from git rev-parse HEAD (fallback to "dev") ---
-    const git_commit_step = b.addSystemCommand(&.{ "sh", "-c", "git rev-parse HEAD 2>/dev/null || echo dev" });
-    const git_output = git_commit_step.captureStdOut();
-    const write_commit = b.addUpdateSourceFiles();
-    write_commit.addCopyFileToSource(git_output, "src/commit.txt");
-    write_commit.step.dependOn(&git_commit_step.step);
+    // NOTE: src/version.txt is embedded at compile time via @embedFile("version.txt")
+    // in updater.zig. Locally it contains "v0.0.0-dev". GitHub Actions overwrites this
+    // file with the real semver tag (e.g. "v0.2.3") BEFORE invoking `zig build`, so the
+    // released binary always contains the correct version. build.zig does NOT write this
+    // file — doing so with a sh/git command is cross-platform broken and unnecessary.
 
     // --- SDL3 dependency ---
     const sdl3_dep = b.dependency("SDL", .{
@@ -58,9 +57,6 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .windows) {
         exe.subsystem = .Windows;
     }
-
-    // Make sure commit.txt is written before compilation
-    exe.step.dependOn(&write_commit.step);
 
     b.installArtifact(exe);
 

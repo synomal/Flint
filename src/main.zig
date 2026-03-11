@@ -4,6 +4,7 @@ const c = @import("c_imports.zig").c;
 
 const renderer_mod = @import("renderer.zig");
 const ui = @import("ui.zig");
+const ui_state_mod = @import("ui/state.zig"); // canonical mutable ui_state lives here
 const config_mod = @import("config.zig");
 const safe_fs = @import("safe_fs.zig");
 const launcher_mod = @import("launcher.zig");
@@ -20,7 +21,7 @@ const text_logo_data = @embedFile("assets/flint-text.png");
 fn clayErrorHandler(err: c.Clay_ErrorData) callconv(.c) void {
     const msg = err.errorText;
     if (msg.chars != null and msg.length > 0) {
-        std.log.err("Clay: {s}", .{msg.chars[0..@intCast(msg.length)]});
+        logger.err("Clay: {s}", .{msg.chars[0..@intCast(msg.length)]});
     }
 }
 
@@ -45,13 +46,14 @@ pub fn main() !void {
     }
 
     // ── Load config ───────────────────────────────────────────────────
-    ui.ui_state.config = try config_mod.loadConfig(allocator);
-    try safe_fs.assertSavesNotInVersions(allocator, ui.ui_state.config.saves_path);
+    ui_state_mod.ui_state.config = try config_mod.loadConfig(allocator);
+    try safe_fs.assertSavesNotInVersions(allocator, ui_state_mod.ui_state.config.saves_path);
 
     // ── Game version display ──────────────────────────────────────────
     if (game_updater.getGameVersionShort(allocator) catch null) |gv| {
-        const written = std.fmt.bufPrint(&ui.ui_state.game_version_display, "nightly-{s}", .{gv}) catch "";
-        ui.ui_state.game_version_len = written.len;
+        defer allocator.free(gv);
+        const written = std.fmt.bufPrint(&ui_state_mod.ui_state.game_version_display, "nightly-{s}", .{gv}) catch "";
+        ui_state_mod.ui_state.game_version_len = written.len;
     }
 
     // Scan installed versions
@@ -65,26 +67,39 @@ pub fn main() !void {
     }.run, .{}) catch null;
     if (update_thread) |t| t.detach();
 
+    // Auto-check for launcher update in background
+    const launcher_check_thread = std.Thread.spawn(.{}, struct {
+        fn run() void {
+            updater_mod.checkForLauncherUpdate(std.heap.page_allocator) catch {};
+        }
+    }.run, .{}) catch null;
+    if (launcher_check_thread) |t| t.detach();
+
+    // Show installer overlay if not running from .flintlauncher
+    if (!updater_mod.isInstalledLocation(allocator)) {
+        ui_state_mod.ui_state.show_installer = true;
+    }
+
     // ── SDL3 init ─────────────────────────────────────────────────────
     _ = c.SDL_SetAppMetadata("Flint", "1.0", "com.synomal.flint");
     _ = c.SDL_SetHint(c.SDL_HINT_APP_ID, "com.synomal.flint");
 
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
-        std.log.err("SDL_Init: {s}", .{c.SDL_GetError()});
+        logger.err("SDL_Init: {s}", .{c.SDL_GetError()});
         return;
     }
     defer c.SDL_Quit();
 
     var window: ?*c.SDL_Window = null;
     var sdl_renderer: ?*c.SDL_Renderer = null;
-    window = c.SDL_CreateWindow("Flint", 800, 600, c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY | c.SDL_WINDOW_HIDDEN);
+    window = c.SDL_CreateWindow("Flint", 854, 480, c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY | c.SDL_WINDOW_HIDDEN);
     if (window == null) {
-        std.log.err("Window: {s}", .{c.SDL_GetError()});
+        logger.err("Window: {s}", .{c.SDL_GetError()});
         return;
     }
     sdl_renderer = c.SDL_CreateRenderer(window.?, null);
     if (sdl_renderer == null) {
-        std.log.err("Renderer: {s}", .{c.SDL_GetError()});
+        logger.err("Renderer: {s}", .{c.SDL_GetError()});
         return;
     }
     defer {
@@ -107,7 +122,7 @@ pub fn main() !void {
         4,
     );
     if (icon_pixels != null) {
-        std.log.info("Loaded icon asset: {d}x{d} ({d} channels)", .{ icon_w, icon_h, icon_ch });
+        logger.info("Loaded icon asset: {d}x{d} ({d} channels)", .{ icon_w, icon_h, icon_ch });
         const icon_surf = c.SDL_CreateSurfaceFrom(icon_w, icon_h, c.SDL_PIXELFORMAT_RGBA32, @ptrCast(icon_pixels), icon_w * 4);
         if (icon_surf != null) {
             var final_surf = icon_surf;
@@ -122,19 +137,19 @@ pub fn main() !void {
             }
 
             if (!c.SDL_SetWindowIcon(window.?, final_surf)) {
-                std.log.err("SDL_SetWindowIcon failed: {s}", .{c.SDL_GetError()});
+                logger.err("SDL_SetWindowIcon failed: {s}", .{c.SDL_GetError()});
             } else {
-                std.log.info("Successfully set window icon (square resized)", .{});
+                logger.info("Successfully set window icon (square resized)", .{});
             }
 
             if (final_surf != icon_surf) c.SDL_DestroySurface(final_surf);
             c.SDL_DestroySurface(icon_surf);
         } else {
-            std.log.err("Failed to create icon surface: {s}", .{c.SDL_GetError()});
+            logger.err("Failed to create icon surface: {s}", .{c.SDL_GetError()});
         }
         c.stbi_image_free(icon_pixels);
     } else {
-        std.log.err("Failed to load icon pixels: {s}", .{c.stbi_failure_reason()});
+        logger.err("Failed to load icon pixels: {s}", .{c.stbi_failure_reason()});
     }
 
     _ = c.SDL_ShowWindow(window.?);
@@ -143,10 +158,10 @@ pub fn main() !void {
     var render_state = renderer_mod.init(sdl_renderer.?, bg_data, font_data, logo_data, text_logo_data);
     defer renderer_mod.deinit(&render_state);
 
-    ui.ui_state.logo_texture = render_state.logo_texture;
-    ui.ui_state.text_logo_texture = render_state.text_logo_texture;
-    ui.ui_state.font = render_state.font;
-    ui.ui_state.allocator = allocator;
+    ui_state_mod.ui_state.logo_texture = render_state.logo_texture;
+    ui_state_mod.ui_state.text_logo_texture = render_state.text_logo_texture;
+    ui_state_mod.ui_state.font = render_state.font;
+    ui_state_mod.ui_state.allocator = allocator;
 
     // ── Clay init ─────────────────────────────────────────────────────
     const clay_size = c.Clay_MinMemorySize();
@@ -268,5 +283,5 @@ pub fn main() !void {
     }
 
     // Save config on exit
-    config_mod.saveConfig(allocator, &ui.ui_state.config) catch {};
+    config_mod.saveConfig(allocator, &ui_state_mod.ui_state.config) catch {};
 }

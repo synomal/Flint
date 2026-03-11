@@ -1,18 +1,8 @@
 const std = @import("std");
 const safe_fs = @import("safe_fs.zig");
 const logger = @import("logger.zig");
+const http_client = @import("http_client.zig");
 
-/// Decompress gzip body if detected, otherwise return original.
-/// Caller must free the returned slice if it differs from the input.
-fn decompressBody(allocator: std.mem.Allocator, body: []const u8) ![]const u8 {
-    if (body.len >= 2 and body[0] == 0x1f and body[1] == 0x8b) {
-        var input_reader = std.Io.Reader.fixed(body);
-        var window_buf: [std.compress.flate.max_window_len]u8 = undefined;
-        var decomp = std.compress.flate.Decompress.init(&input_reader, .gzip, &window_buf);
-        return decomp.reader.allocRemaining(allocator, .unlimited) catch return error.OutOfMemory;
-    }
-    return body;
-}
 
 /// Download progress info for UI
 pub const DownloadProgress = struct {
@@ -104,70 +94,19 @@ pub fn writeGameVersion(allocator: std.mem.Allocator, sha: []const u8) !void {
 
 /// Check for game updates via GitHub API
 pub fn checkForGameUpdate(allocator: std.mem.Allocator) !void {
-    std.log.info("Checking for game updates...", .{});
+    logger.info("Checking for game updates...", .{});
     game_update_status = .checking;
 
-    // Read current installed version
     const current_sha = try readGameVersion(allocator);
 
-    var bundle = std.crypto.Certificate.Bundle{};
-    bundle.rescan(allocator) catch {};
-
-    var client = std.http.Client{ .allocator = allocator, .ca_bundle = bundle };
-    defer client.deinit();
-
-    const uri = try std.Uri.parse(GAME_API_URL);
-    // Use fetch API which encapsulates open/send/wait
-    var req = client.request(.GET, uri, .{
-        .extra_headers = &.{
-            .{ .name = "User-Agent", .value = "Flint/1.0" },
-            .{ .name = "Accept", .value = "application/vnd.github.v3+json" },
-            .{ .name = "Accept-Encoding", .value = "identity" },
-        },
-    }) catch |err| {
-        logger.err("game fetch request err: {}", .{err});
-        game_update_status = .err;
-        return;
-    };
-    defer req.deinit();
-
-    req.sendBodiless() catch |err| {
-        logger.err("game sendBodiless err: {}", .{err});
-        game_update_status = .err;
-        return;
-    };
-
-    var server_header_buffer: [8192]u8 = undefined;
-    var response = req.receiveHead(&server_header_buffer) catch |err| {
-        logger.err("game receiveHead err: {}", .{err});
-        game_update_status = .err;
-        return;
-    };
-
-    if (response.head.status != .ok) {
-        logger.err("game status not ok: {}", .{response.head.status});
-        game_update_status = .err;
-        return;
-    }
-
-    var reader = response.reader(&.{});
-    const body = reader.allocRemaining(allocator, .unlimited) catch |err| {
-        logger.err("game readAllAlloc err: {}", .{err});
+    const body = http_client.fetchBody(allocator, GAME_API_URL) catch {
         game_update_status = .err;
         return;
     };
     defer allocator.free(body);
 
-    // Decompress gzip if needed (GitHub may compress despite Accept-Encoding: identity)
-    const json_body = decompressBody(allocator, body) catch {
-        game_update_status = .err;
-        return;
-    };
-    defer if (json_body.ptr != body.ptr) allocator.free(json_body);
-
-    // Parse JSON
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_body, .{}) catch |err| {
-        logger.err("game json parse err: {}", .{err});
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch |e| {
+        logger.err("game json parse err: {}", .{e});
         game_update_status = .err;
         return;
     };
@@ -179,8 +118,6 @@ pub fn checkForGameUpdate(allocator: std.mem.Allocator) !void {
         return;
     }
 
-    // Use published_at timestamp as the version identifier instead of target_commitish,
-    // because the nightly tag is force-pushed and target_commitish never changes.
     const published_at_val = root.object.get("published_at") orelse {
         game_update_status = .err;
         return;
@@ -190,68 +127,24 @@ pub fn checkForGameUpdate(allocator: std.mem.Allocator) !void {
         return;
     }
     const published_at = published_at_val.string;
+    if (available_game_sha) |old| allocator.free(old);
     available_game_sha = try allocator.dupe(u8, published_at);
 
-    // Compare
     if (current_sha) |cs| {
-        if (std.mem.eql(u8, cs, published_at)) {
-            game_update_status = .up_to_date;
-        } else {
-            game_update_status = .update_available;
-        }
+        game_update_status = if (std.mem.eql(u8, cs, published_at)) .up_to_date else .update_available;
     } else {
-        // No version installed
         game_update_status = .update_available;
     }
 }
 
 /// Find the download URL for the game zip asset
 pub fn findGameAssetUrl(allocator: std.mem.Allocator) ![]const u8 {
-    var bundle = std.crypto.Certificate.Bundle{};
-    bundle.rescan(allocator) catch {};
-
-    var client = std.http.Client{ .allocator = allocator, .ca_bundle = bundle };
-    defer client.deinit();
-
-    const uri = try std.Uri.parse(GAME_API_URL);
-    // Use fetch API which encapsulates open/send/wait
-    var req = client.request(.GET, uri, .{
-        .extra_headers = &.{
-            .{ .name = "User-Agent", .value = "Flint/1.0" },
-            .{ .name = "Accept", .value = "application/vnd.github.v3+json" },
-            .{ .name = "Accept-Encoding", .value = "identity" },
-        },
-    }) catch {
-        return try allocator.dupe(u8, GAME_FALLBACK_URL);
-    };
-    defer req.deinit();
-
-    req.sendBodiless() catch {
-        return try allocator.dupe(u8, GAME_FALLBACK_URL);
-    };
-
-    var server_header_buffer: [8192]u8 = undefined;
-    var response = req.receiveHead(&server_header_buffer) catch {
-        return try allocator.dupe(u8, GAME_FALLBACK_URL);
-    };
-
-    if (response.head.status != .ok) {
-        return try allocator.dupe(u8, GAME_FALLBACK_URL);
-    }
-
-    var reader = response.reader(&.{});
-    const body = reader.allocRemaining(allocator, .unlimited) catch {
+    const body = http_client.fetchBody(allocator, GAME_API_URL) catch {
         return try allocator.dupe(u8, GAME_FALLBACK_URL);
     };
     defer allocator.free(body);
 
-    // Decompress gzip if needed
-    const json_body = decompressBody(allocator, body) catch {
-        return try allocator.dupe(u8, GAME_FALLBACK_URL);
-    };
-    defer if (json_body.ptr != body.ptr) allocator.free(json_body);
-
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_body, .{}) catch {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
         return try allocator.dupe(u8, GAME_FALLBACK_URL);
     };
     defer parsed.deinit();
@@ -576,10 +469,11 @@ fn cleanOldVersions(allocator: std.mem.Allocator) !void {
 pub fn getGameVersionShort(allocator: std.mem.Allocator) !?[]const u8 {
     const sha = try readGameVersion(allocator);
     if (sha) |s| {
+        defer allocator.free(s);
         if (s.len >= 10) {
             return try allocator.dupe(u8, s[0..10]);
         }
-        return s;
+        return try allocator.dupe(u8, s);
     }
     return null;
 }

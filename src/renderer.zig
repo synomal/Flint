@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("c_imports.zig").c;
+const logger = @import("logger.zig");
 
 /// Holds all SDL rendering resources
 pub const RenderState = struct {
@@ -26,7 +27,7 @@ pub fn init(
     // ── Background image from embedded bytes ──
     state.bg_texture = loadTextureFromMemory(sdl_renderer, bg_data);
     if (state.bg_texture == null) {
-        std.log.err("Failed to load background texture", .{});
+        logger.err("Failed to load background texture", .{});
     }
 
     // ── Logo and Text Logo ──
@@ -42,16 +43,16 @@ pub fn init(
     if (rw != null) {
         state.font = c.TTF_OpenFontIO(rw, true, 16);
         if (state.font == null) {
-            std.log.err("TTF_OpenFontIO failed: {s}", .{c.SDL_GetError()});
+            logger.err("TTF_OpenFontIO failed: {s}", .{c.SDL_GetError()});
         } else {
             _ = c.TTF_SetFontHinting(state.font, c.TTF_HINTING_NONE);
-            std.log.info("Loaded TTF from memory. Family: {s}, face: {s}", .{
+            logger.info("Loaded TTF from memory. Family: {s}, face: {s}", .{
                 c.TTF_GetFontFamilyName(state.font),
                 c.TTF_GetFontStyleName(state.font),
             });
         }
     } else {
-        std.log.err("SDL_IOFromConstMem failed: {s}", .{c.SDL_GetError()});
+        logger.err("SDL_IOFromConstMem failed: {s}", .{c.SDL_GetError()});
     }
 
     return state;
@@ -79,14 +80,14 @@ fn loadTextureFromMemory(renderer: *c.SDL_Renderer, data: []const u8) ?*c.SDL_Te
         4,
     );
     if (pixels == null) {
-        std.log.err("stbi_load failed: {s}", .{c.stbi_failure_reason()});
+        logger.err("stbi_load failed: {s}", .{c.stbi_failure_reason()});
         return null;
     }
     defer c.stbi_image_free(pixels);
 
     const surf = c.SDL_CreateSurfaceFrom(w, h, c.SDL_PIXELFORMAT_RGBA32, @ptrCast(pixels), w * 4);
     if (surf == null) {
-        std.log.err("Failed to create surface: {s}", .{c.SDL_GetError()});
+        logger.err("Failed to create surface: {s}", .{c.SDL_GetError()});
         return null;
     }
     defer c.SDL_DestroySurface(surf);
@@ -127,11 +128,42 @@ pub fn measureText(
     };
 }
 
-/// Render the full-window scaled background + darkening overlay
+/// Render the full-window cover-cropped background + darkening overlay.
+/// The texture is scaled to fill the window while preserving its aspect ratio;
+/// excess pixels are cropped from the centre (CSS `object-fit: cover` behaviour).
 pub fn renderBackground(state: *RenderState) void {
     if (state.bg_texture) |tex| {
-        const dest = c.SDL_FRect{ .x = 0, .y = 0, .w = state.window_width, .h = state.window_height };
-        _ = c.SDL_RenderTexture(state.renderer, tex, null, &dest);
+        var tex_w: f32 = 0;
+        var tex_h: f32 = 0;
+        {
+            var tw: f32 = 0;
+            var th: f32 = 0;
+            _ = c.SDL_GetTextureSize(tex, &tw, &th);
+            tex_w = tw;
+            tex_h = th;
+        }
+
+        const win_w = state.window_width;
+        const win_h = state.window_height;
+
+        // Compute cover scale: largest scale such that both dimensions fill the window
+        const scale_x = win_w / tex_w;
+        const scale_y = win_h / tex_h;
+        const scale = if (scale_x > scale_y) scale_x else scale_y;
+
+        // Scaled texture dimensions
+        const scaled_w = tex_w * scale;
+        const scaled_h = tex_h * scale;
+
+        // Source rect cropped to just what shows on screen (centred)
+        const src_x = (scaled_w - win_w) / 2.0 / scale;
+        const src_y = (scaled_h - win_h) / 2.0 / scale;
+        const src_w = win_w / scale;
+        const src_h = win_h / scale;
+
+        const src = c.SDL_FRect{ .x = src_x, .y = src_y, .w = src_w, .h = src_h };
+        const dst = c.SDL_FRect{ .x = 0, .y = 0, .w = win_w, .h = win_h };
+        _ = c.SDL_RenderTexture(state.renderer, tex, &src, &dst);
     }
 
     // Darkening overlay RGBA(0,0,0,180)

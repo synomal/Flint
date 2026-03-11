@@ -23,6 +23,40 @@ jobs:
         with:
           fetch-depth: 0
 
+      # ── Version bump FIRST, before any build, so the binary contains the real tag ──
+
+      - name: Bump version and push tag
+        if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+        id: bump_version
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          LATEST=$(git tag --list 'v*' --sort=-version:refname | head -n1)
+          if [ -z "$LATEST" ]; then
+            NEW_TAG="v0.1.0"
+          else
+            VERSION="${LATEST#v}"
+            MAJOR=$(echo $VERSION | cut -d. -f1)
+            MINOR=$(echo $VERSION | cut -d. -f2)
+            PATCH=$(echo $VERSION | cut -d. -f3)
+            PATCH=$((PATCH + 1))
+            NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
+          echo "Bumped version to $NEW_TAG"
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag $NEW_TAG
+          git push origin $NEW_TAG
+
+      # Write the real version tag into src/version.txt so @embedFile picks it up at compile time.
+      # On PR builds, leave the file as-is (it will contain "v0.0.0-dev" from source control).
+      - name: Write version.txt
+        if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+        run: echo "${{ steps.bump_version.outputs.new_tag }}" > src/version.txt
+
+      # ── Build ──
+
       - name: Setup Zig
         uses: mlugg/setup-zig@v2.2.1
         with:
@@ -57,30 +91,6 @@ jobs:
         with:
           name: flint-windows-x86_64.zip
           path: flint-windows-x86_64.zip
-
-      - name: Bump version and push tag
-        if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
-        id: bump_version
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          LATEST=$(git tag --list 'v*' --sort=-version:refname | head -n1)
-          if [ -z "$LATEST" ]; then
-            NEW_TAG="v0.1.0"
-          else
-            VERSION="${LATEST#v}"
-            MAJOR=$(echo $VERSION | cut -d. -f1)
-            MINOR=$(echo $VERSION | cut -d. -f2)
-            PATCH=$(echo $VERSION | cut -d. -f3)
-            PATCH=$((PATCH + 1))
-            NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
-          fi
-          echo "Bumped version to $NEW_TAG"
-          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag $NEW_TAG
-          git push origin $NEW_TAG
 
   release:
     name: Release

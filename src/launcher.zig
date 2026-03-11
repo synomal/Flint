@@ -173,7 +173,7 @@ fn moveContentsToSaves(allocator: std.mem.Allocator, src_dir: []const u8, saves_
             // Doesn't exist — rename/move
             std.fs.renameAbsolute(src_path, dst_path) catch {
                 // Cross-device move — would need copy, skip for now
-                std.log.warn("Could not move {s} to saves (cross-device?)", .{entry.name});
+                logger.warn("Could not move {s} to saves (cross-device?)", .{entry.name});
             };
             continue;
         };
@@ -325,14 +325,16 @@ pub fn checkWine(allocator: std.mem.Allocator) !void {
     try child.spawn();
 
     const stdout = child.stdout.?.readToEndAlloc(allocator, 1024) catch "";
+    defer if (stdout.len > 0) allocator.free(stdout);
     const result = child.wait() catch {
         wine_status = .not_found;
         return;
     };
 
     if (result.Exited == 0 and stdout.len > 0) {
-        // Trim trailing newline
-        wine_version = std.mem.trimRight(u8, stdout, "\n\r ");
+        // Trim and store an independent copy so wine_version owns its memory
+        const trimmed = std.mem.trimRight(u8, stdout, "\n\r ");
+        wine_version = try allocator.dupe(u8, trimmed);
         wine_status = .available;
     } else {
         wine_status = .not_found;
@@ -347,6 +349,7 @@ pub fn initWinePrefix(allocator: std.mem.Allocator) !void {
     wine_status = .initializing_prefix;
 
     const wineprefix = try safe_fs.getWinePrefixDir(allocator);
+    defer allocator.free(wineprefix);
 
     var env_map = std.process.EnvMap.init(allocator);
     defer env_map.deinit();
@@ -370,6 +373,7 @@ pub fn resetWinePrefix(allocator: std.mem.Allocator) !void {
     if (comptime builtin.os.tag != .linux) return;
 
     const wineprefix = try safe_fs.getWinePrefixDir(allocator);
+    defer allocator.free(wineprefix);
 
     // Delete wineprefix directory directly (NOT through safeDelete — this is the only
     // code path allowed to delete wineprefix)
