@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const safe_fs = @import("safe_fs.zig");
 const logger = @import("logger.zig");
 const http_client = @import("http_client.zig");
+const events = @import("events.zig");
 
 /// Launcher self-update status
 pub const LauncherUpdateStatus = enum {
@@ -173,9 +174,11 @@ fn extractTarGzBinary(allocator: std.mem.Allocator, archive: []const u8, out_fil
 pub fn checkForLauncherUpdate(allocator: std.mem.Allocator) !void {
     logger.info("Checking for launcher updates...", .{});
     launcher_update_status = .checking;
+    events.pushRedrawEvent();
 
     const body = http_client.fetchBody(allocator, LAUNCHER_API_URL) catch {
         launcher_update_status = .err;
+        events.pushRedrawEvent();
         return;
     };
     defer allocator.free(body);
@@ -183,6 +186,7 @@ pub fn checkForLauncherUpdate(allocator: std.mem.Allocator) !void {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch |e| {
         logger.err("launcher JSON parse err: {}", .{e});
         launcher_update_status = .err;
+        events.pushRedrawEvent();
         return;
     };
     defer parsed.deinit();
@@ -203,6 +207,7 @@ pub fn checkForLauncherUpdate(allocator: std.mem.Allocator) !void {
         .up_to_date
     else
         .update_available;
+    events.pushRedrawEvent();
 }
 
 /// Delete leftover launcher.old on startup
@@ -230,6 +235,7 @@ pub fn cleanupOldLauncher() void {
 /// Downloads the platform archive, extracts the binary, atomically swaps it in.
 pub fn downloadAndApplyUpdate(allocator: std.mem.Allocator) !void {
     launcher_update_status = .downloading;
+    events.pushRedrawEvent();
 
     // Fetch release JSON to find the asset URL
     const body = http_client.fetchBody(allocator, LAUNCHER_API_URL) catch {
@@ -264,6 +270,7 @@ pub fn downloadAndApplyUpdate(allocator: std.mem.Allocator) !void {
     const archive = http_client.fetchBodyLimit(allocator, url, http_client.ARCHIVE_LIMIT) catch |e| {
         logger.err("launcher archive download err: {}", .{e});
         launcher_update_status = .err;
+        events.pushRedrawEvent();
         return;
     };
     defer allocator.free(archive);

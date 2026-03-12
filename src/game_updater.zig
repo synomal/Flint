@@ -2,6 +2,7 @@ const std = @import("std");
 const safe_fs = @import("safe_fs.zig");
 const logger = @import("logger.zig");
 const http_client = @import("http_client.zig");
+const events = @import("events.zig");
 
 
 /// Download progress info for UI
@@ -96,11 +97,13 @@ pub fn writeGameVersion(allocator: std.mem.Allocator, sha: []const u8) !void {
 pub fn checkForGameUpdate(allocator: std.mem.Allocator) !void {
     logger.info("Checking for game updates...", .{});
     game_update_status = .checking;
+    events.pushRedrawEvent();
 
     const current_sha = try readGameVersion(allocator);
 
     const body = http_client.fetchBody(allocator, GAME_API_URL) catch {
         game_update_status = .err;
+        events.pushRedrawEvent();
         return;
     };
     defer allocator.free(body);
@@ -135,6 +138,7 @@ pub fn checkForGameUpdate(allocator: std.mem.Allocator) !void {
     } else {
         game_update_status = .update_available;
     }
+    events.pushRedrawEvent();
 }
 
 /// Find the download URL for the game zip asset
@@ -196,6 +200,7 @@ pub fn findGameAssetUrl(allocator: std.mem.Allocator) ![]const u8 {
 pub fn downloadGame(allocator: std.mem.Allocator) !void {
     game_update_status = .downloading;
     game_download_progress = .{ .is_downloading = true };
+    events.pushRedrawEvent();
 
     const sha = available_game_sha orelse return;
 
@@ -268,6 +273,7 @@ pub fn downloadGame(allocator: std.mem.Allocator) !void {
             try out_file.writeAll(read_buf[0..n]);
             bytes_written += n;
             game_download_progress.bytes_received = bytes_written;
+            events.pushRedrawEvent();
         }
 
         if (total > 0 and bytes_written < total) {
@@ -281,6 +287,7 @@ pub fn downloadGame(allocator: std.mem.Allocator) !void {
     game_download_progress.is_extracting = true;
     game_download_progress.bytes_received = 0;
     game_download_progress.total_bytes = 0;
+    events.pushRedrawEvent();
     var target_buf_dir: [std.fs.max_path_bytes]u8 = undefined;
     const target_dir_path = try std.fmt.bufPrint(&target_buf_dir, "{s}nightly-{s}", .{ versions, version_slug });
 
@@ -340,6 +347,7 @@ pub fn downloadGame(allocator: std.mem.Allocator) !void {
             try fastExtractEntry(&extract_reader, entry, target_dir, write_buf, flate_buf);
             extracted_bytes += entry.inner.uncompressed_size;
             game_download_progress.bytes_received = extracted_bytes;
+            events.pushRedrawEvent();
         }
     }
 
@@ -357,6 +365,7 @@ pub fn downloadGame(allocator: std.mem.Allocator) !void {
     game_download_progress.is_downloading = false;
     game_download_progress.is_extracting = false;
     game_update_status = .up_to_date;
+    events.pushRedrawEvent();
     refreshInstalledVersions(allocator);
 
     // Write game version

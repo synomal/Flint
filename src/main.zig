@@ -11,6 +11,7 @@ const launcher_mod = @import("launcher.zig");
 const game_updater = @import("game_updater.zig");
 const updater_mod = @import("updater.zig");
 const logger = @import("logger.zig");
+const events = @import("events.zig");
 
 // ── Embedded assets ───────────────────────────────────────────────────
 const bg_data = @embedFile("assets/background.jpg");
@@ -152,6 +153,8 @@ pub fn main() !void {
         logger.err("Failed to load icon pixels: {s}", .{c.stbi_failure_reason()});
     }
 
+    events.redraw_event_type = c.SDL_RegisterEvents(1);
+
     _ = c.SDL_ShowWindow(window.?);
 
     // ── Renderer init (asset loading) ─────────────────────────────────
@@ -189,99 +192,138 @@ pub fn main() !void {
 
     // ── Main loop ─────────────────────────────────────────────────────
     var running = true;
+    var needs_redraw = true;
+    var last_frame_time = c.SDL_GetTicks();
+
     while (running) {
         var event: c.SDL_Event = undefined;
-        while (c.SDL_PollEvent(&event)) {
-            switch (event.type) {
-                c.SDL_EVENT_QUIT => running = false,
-                c.SDL_EVENT_WINDOW_RESIZED => {
-                    var new_w: c_int = 0;
-                    var new_h: c_int = 0;
-                    _ = c.SDL_GetWindowSizeInPixels(window.?, &new_w, &new_h);
-                    render_state.window_width = @floatFromInt(new_w);
-                    render_state.window_height = @floatFromInt(new_h);
-                    c.Clay_SetLayoutDimensions(.{
-                        .width = render_state.window_width,
-                        .height = render_state.window_height,
-                    });
-                },
-                c.SDL_EVENT_MOUSE_MOTION => {
-                    var log_w: c_int = 0;
-                    var pix_w: c_int = 0;
-                    _ = c.SDL_GetWindowSize(window.?, &log_w, null);
-                    _ = c.SDL_GetWindowSizeInPixels(window.?, &pix_w, null);
-                    const scale = if (log_w > 0) @as(f32, @floatFromInt(pix_w)) / @as(f32, @floatFromInt(log_w)) else 1.0;
-
-                    c.Clay_SetPointerState(
-                        .{ .x = event.motion.x * scale, .y = event.motion.y * scale },
-                        event.motion.state & c.SDL_BUTTON_LMASK != 0,
-                    );
-                },
-                c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-                    var log_w: c_int = 0;
-                    var pix_w: c_int = 0;
-                    _ = c.SDL_GetWindowSize(window.?, &log_w, null);
-                    _ = c.SDL_GetWindowSizeInPixels(window.?, &pix_w, null);
-                    const scale = if (log_w > 0) @as(f32, @floatFromInt(pix_w)) / @as(f32, @floatFromInt(log_w)) else 1.0;
-
-                    if (event.button.button == c.SDL_BUTTON_LEFT) {
-                        c.Clay_SetPointerState(.{ .x = event.button.x * scale, .y = event.button.y * scale }, true);
-                        ui.handleClick();
-                    }
-                },
-                c.SDL_EVENT_MOUSE_BUTTON_UP => {
-                    var log_w: c_int = 0;
-                    var pix_w: c_int = 0;
-                    _ = c.SDL_GetWindowSize(window.?, &log_w, null);
-                    _ = c.SDL_GetWindowSizeInPixels(window.?, &pix_w, null);
-                    const scale = if (log_w > 0) @as(f32, @floatFromInt(pix_w)) / @as(f32, @floatFromInt(log_w)) else 1.0;
-
-                    c.Clay_SetPointerState(.{ .x = event.button.x * scale, .y = event.button.y * scale }, false);
-                },
-                c.SDL_EVENT_MOUSE_WHEEL => {
-                    c.Clay_UpdateScrollContainers(true, .{ .x = event.wheel.x * 10, .y = event.wheel.y * 10 }, 0.016);
-                },
-                c.SDL_EVENT_TEXT_INPUT => {
-                    if (event.text.text != null) {
-                        const text_slice = std.mem.span(event.text.text);
-                        ui.handleTextInput(text_slice);
-                    }
-                },
-                c.SDL_EVENT_KEY_DOWN => {
-                    if (event.key.key == c.SDLK_BACKSPACE) {
-                        ui.handleBackspace();
-                    } else if (event.key.key == c.SDLK_DELETE) {
-                        ui.handleDelete();
-                    } else if (event.key.key == c.SDLK_LEFT) {
-                        ui.handleLeftArrow();
-                    } else if (event.key.key == c.SDLK_RIGHT) {
-                        ui.handleRightArrow();
-                    } else if (event.key.key == c.SDLK_RETURN or event.key.key == c.SDLK_RETURN2) {
-                        ui.handleReturn();
-                    } else if (event.key.key == c.SDLK_TAB) {
-                        ui.handleTab();
-                    }
-                },
-                else => {},
+        // Wait for an event with a 16ms timeout.
+        // This wakes up the loop at least 60 times a second if idle, or immediately on event.
+        if (c.SDL_WaitEventTimeout(&event, 16)) {
+            handleEvent(&event, window.?, &render_state, &running, &needs_redraw);
+            // Drain remaining events
+            while (c.SDL_PollEvent(&event)) {
+                handleEvent(&event, window.?, &render_state, &running, &needs_redraw);
             }
         }
 
-        // Poll game process
+        // Poll game process (non-blocking)
         launcher_mod.pollGameProcess();
 
-        // Layout
-        const cmds = ui.layoutRoot();
+        if (needs_redraw) {
+            const now = c.SDL_GetTicks();
+            const elapsed = now - last_frame_time;
+            if (elapsed >= 16) {
+                // Layout
+                const cmds = ui.layoutRoot();
 
-        // Render
-        _ = c.SDL_SetRenderDrawColor(sdl_renderer.?, 0, 0, 0, 255);
-        _ = c.SDL_RenderClear(sdl_renderer.?);
-        renderer_mod.renderBackground(&render_state);
-        renderer_mod.renderClayCommands(&render_state, cmds);
-        _ = c.SDL_RenderPresent(sdl_renderer.?);
+                // Render
+                _ = c.SDL_SetRenderDrawColor(sdl_renderer.?, 0, 0, 0, 255);
+                _ = c.SDL_RenderClear(sdl_renderer.?);
+                renderer_mod.renderBackground(&render_state);
+                renderer_mod.renderClayCommands(&render_state, cmds);
+                _ = c.SDL_RenderPresent(sdl_renderer.?);
 
-        c.SDL_Delay(16);
+                needs_redraw = false;
+                last_frame_time = now;
+            }
+        }
     }
 
     // Save config on exit
     config_mod.saveConfig(allocator, &ui_state_mod.ui_state.config) catch {};
+}
+
+fn handleEvent(
+    event: *c.SDL_Event,
+    window: *c.SDL_Window,
+    render_state: *renderer_mod.RenderState,
+    running: *bool,
+    needs_redraw: *bool,
+) void {
+
+    if (event.type == events.redraw_event_type) {
+        needs_redraw.* = true;
+        return;
+    }
+
+    switch (event.type) {
+        c.SDL_EVENT_QUIT => running.* = false,
+        c.SDL_EVENT_WINDOW_RESIZED => {
+            var new_w: c_int = 0;
+            var new_h: c_int = 0;
+            _ = c.SDL_GetWindowSizeInPixels(window, &new_w, &new_h);
+            render_state.window_width = @floatFromInt(new_w);
+            render_state.window_height = @floatFromInt(new_h);
+            c.Clay_SetLayoutDimensions(.{
+                .width = render_state.window_width,
+                .height = render_state.window_height,
+            });
+            needs_redraw.* = true;
+        },
+        c.SDL_EVENT_MOUSE_MOTION => {
+            var log_w: c_int = 0;
+            var pix_w: c_int = 0;
+            _ = c.SDL_GetWindowSize(window, &log_w, null);
+            _ = c.SDL_GetWindowSizeInPixels(window, &pix_w, null);
+            const scale = if (log_w > 0) @as(f32, @floatFromInt(pix_w)) / @as(f32, @floatFromInt(log_w)) else 1.0;
+
+            c.Clay_SetPointerState(
+                .{ .x = event.motion.x * scale, .y = event.motion.y * scale },
+                event.motion.state & c.SDL_BUTTON_LMASK != 0,
+            );
+            needs_redraw.* = true;
+        },
+        c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+            var log_w: c_int = 0;
+            var pix_w: c_int = 0;
+            _ = c.SDL_GetWindowSize(window, &log_w, null);
+            _ = c.SDL_GetWindowSizeInPixels(window, &pix_w, null);
+            const scale = if (log_w > 0) @as(f32, @floatFromInt(pix_w)) / @as(f32, @floatFromInt(log_w)) else 1.0;
+
+            if (event.button.button == c.SDL_BUTTON_LEFT) {
+                c.Clay_SetPointerState(.{ .x = event.button.x * scale, .y = event.button.y * scale }, true);
+                ui.handleClick();
+            }
+            needs_redraw.* = true;
+        },
+        c.SDL_EVENT_MOUSE_BUTTON_UP => {
+            var log_w: c_int = 0;
+            var pix_w: c_int = 0;
+            _ = c.SDL_GetWindowSize(window, &log_w, null);
+            _ = c.SDL_GetWindowSizeInPixels(window, &pix_w, null);
+            const scale = if (log_w > 0) @as(f32, @floatFromInt(pix_w)) / @as(f32, @floatFromInt(log_w)) else 1.0;
+
+            c.Clay_SetPointerState(.{ .x = event.button.x * scale, .y = event.button.y * scale }, false);
+            needs_redraw.* = true;
+        },
+        c.SDL_EVENT_MOUSE_WHEEL => {
+            c.Clay_UpdateScrollContainers(true, .{ .x = event.wheel.x * 10, .y = event.wheel.y * 10 }, 0.016);
+            needs_redraw.* = true;
+        },
+        c.SDL_EVENT_TEXT_INPUT => {
+            if (event.text.text != null) {
+                const text_slice = std.mem.span(event.text.text);
+                ui.handleTextInput(text_slice);
+            }
+            needs_redraw.* = true;
+        },
+        c.SDL_EVENT_KEY_DOWN => {
+            if (event.key.key == c.SDLK_BACKSPACE) {
+                ui.handleBackspace();
+            } else if (event.key.key == c.SDLK_DELETE) {
+                ui.handleDelete();
+            } else if (event.key.key == c.SDLK_LEFT) {
+                ui.handleLeftArrow();
+            } else if (event.key.key == c.SDLK_RIGHT) {
+                ui.handleRightArrow();
+            } else if (event.key.key == c.SDLK_RETURN or event.key.key == c.SDLK_RETURN2) {
+                ui.handleReturn();
+            } else if (event.key.key == c.SDLK_TAB) {
+                ui.handleTab();
+            }
+            needs_redraw.* = true;
+        },
+        else => {},
+    }
 }
